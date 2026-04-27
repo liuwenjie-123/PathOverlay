@@ -1,0 +1,45 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PathOverlayCommon", "common\PathOverlayCommon.vcxproj", "{0B7F33F5-B42A-4D56-92F8-3EF77FB04203}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PathOverlaySvc", "service\PathOverlaySvc\PathOverlaySvc.vcxproj", "{8072DB89-0C19-45B6-881A-8059574D6B24}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "pathoverlay", "cli\pathoverlay\pathoverlay.vcxproj", "{4E0B5B6F-2C68-4EEA-A037-A016C63D41D8}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PathOverlayTests", "tests\PathOverlayTests.vcxproj", "{3B6E24FC-46B7-49C7-B233-F3E2309C7A6F}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PathOverlayFlt", "driver\PathOverlayFlt\PathOverlayFlt.vcxproj", "{D9B98890-88C8-45B4-98C4-9DD0DA97D2B1}"
+EndProject
+Global
+    GlobalSection(SolutionConfigurationPlatforms) = preSolution
+        Debug|x64 = Debug|x64
+        Release|x64 = Release|x64
+    EndGlobalSection
+    GlobalSection(ProjectConfigurationPlatforms) = postSolution
+        {0B7F33F5-B42A-4D56-92F8-3EF77FB04203}.Debug|x64.ActiveCfg = Debug|x64
+        {0B7F33F5-B42A-4D56-92F8-3EF77FB04203}.Debug|x64.Build.0 = Debug|x64
+        {0B7F33F5-B42A-4D56-92F8-3EF77FB04203}.Release|x64.ActiveCfg = Release|x64
+        {0B7F33F5-B42A-4D56-92F8-3EF77FB04203}.Release|x64.Build.0 = Release|x64
+        {8072DB89-0C19-45B6-881A-8059574D6B24}.Debug|x64.ActiveCfg = Debug|x64
+        {8072DB89-0C19-45B6-881A-8059574D6B24}.Debug|x64.Build.0 = Debug|x64
+        {8072DB89-0C19-45B6-881A-8059574D6B24}.Release|x64.ActiveCfg = Release|x64
+        {8072DB89-0C19-45B6-881A-8059574D6B24}.Release|x64.Build.0 = Release|x64
+        {4E0B5B6F-2C68-4EEA-A037-A016C63D41D8}.Debug|x64.ActiveCfg = Debug|x64
+        {4E0B5B6F-2C68-4EEA-A037-A016C63D41D8}.Debug|x64.Build.0 = Debug|x64
+        {4E0B5B6F-2C68-4EEA-A037-A016C63D41D8}.Release|x64.ActiveCfg = Release|x64
+        {4E0B5B6F-2C68-4EEA-A037-A016C63D41D8}.Release|x64.Build.0 = Release|x64
+        {3B6E24FC-46B7-49C7-B233-F3E2309C7A6F}.Debug|x64.ActiveCfg = Debug|x64
+        {3B6E24FC-46B7-49C7-B233-F3E2309C7A6F}.Debug|x64.Build.0 = Debug|x64
+        {3B6E24FC-46B7-49C7-B233-F3E2309C7A6F}.Release|x64.ActiveCfg = Release|x64
+        {3B6E24FC-46B7-49C7-B233-F3E2309C7A6F}.Release|x64.Build.0 = Release|x64
+        {D9B98890-88C8-45B4-98C4-9DD0DA97D2B1}.Debug|x64.ActiveCfg = Debug|x64
+        {D9B98890-88C8-45B4-98C4-9DD0DA97D2B1}.Debug|x64.Build.0 = Debug|x64
+        {D9B98890-88C8-45B4-98C4-9DD0DA97D2B1}.Release|x64.ActiveCfg = Release|x64
+        {D9B98890-88C8-45B4-98C4-9DD0DA97D2B1}.Release|x64.Build.0 = Release|x64
+    EndGlobalSection
+    GlobalSection(SolutionProperties) = preSolution
+        HideSolutionNode = FALSE
+    EndGlobalSection
+EndGlobal

@@ -1,0 +1,397 @@
+{
+  "project": "PathOverlay",
+  "version": "0.1.0-mvp",
+  "status_values": [
+    "pending",
+    "in_progress",
+    "blocked",
+    "done"
+  ],
+  "tasks": [
+    {
+      "id": "T001",
+      "title": "编写设计审查与 MVP 开发计划文档",
+      "status": "done",
+      "description": "审查现有设计文档，修正 MVP 范围过大或风险过高的内容，并明确第一版开发边界。",
+      "deliverables": [
+        "docs/Design_Review_and_Revisions.md",
+        "docs/MVP_Development_Plan.md"
+      ],
+      "test_criteria": [
+        "文档明确 MVP 只支持一个本地目录规则",
+        "文档明确 rename、整盘覆盖、UNC、硬链接、ADS、完整 ACL 继承不属于 MVP",
+        "文档说明 source/store 不能互相嵌套，store 和服务进程必须排除重定向"
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "T002",
+      "title": "创建 C++ 解决方案与项目结构",
+      "status": "done",
+      "description": "创建驱动、服务、CLI、公共库、测试和脚本目录，并建立 Visual Studio 解决方案。",
+      "deliverables": [
+        "PathOverlay.sln",
+        "driver/PathOverlayFlt/",
+        "service/PathOverlaySvc/",
+        "cli/pathoverlay/",
+        "common/",
+        "tests/",
+        "scripts/build.ps1",
+        "scripts/test.ps1"
+      ],
+      "test_criteria": [
+        "仓库包含计划中的目录结构",
+        "PathOverlay.sln 可被 Visual Studio 2022 打开",
+        "build.ps1 在缺少 WDK 或依赖时给出清晰错误",
+        "test.ps1 不要求安装驱动即可运行用户态测试"
+      ],
+      "depends_on": [
+        "T001"
+      ]
+    },
+    {
+      "id": "T003",
+      "title": "实现公共路径与规则模型",
+      "status": "done",
+      "description": "实现 OverlayRule、路径规范化、规则校验和真实路径到隔离路径的映射。",
+      "deliverables": [
+        "规则模型",
+        "路径规范化工具",
+        "source/store 校验",
+        "RealPath 到 ShadowPath 映射"
+      ],
+      "test_criteria": [
+        "本地目录 source 可通过校验",
+        "盘符根、UNC、reparse point 和不存在路径被拒绝",
+        "source 与 store 互相包含时被拒绝",
+        "同一输入路径总是生成确定的 ShadowPath"
+      ],
+      "depends_on": [
+        "T002"
+      ]
+    },
+    {
+      "id": "T004",
+      "title": "实现 SQLite 元数据存储",
+      "status": "done",
+      "notes": "已通过用户态测试。测试运行时使用 SQLite 官方 Windows x64 sqlite3.dll，放置在 x64/Debug 输出目录。",
+      "description": "实现规则、变更记录、删除标记和提交日志的 SQLite 存储。",
+      "deliverables": [
+        "数据库初始化",
+        "规则持久化",
+        "变更记录持久化",
+        "提交日志持久化"
+      ],
+      "test_criteria": [
+        "首次运行可自动初始化数据库",
+        "规则可新增、查询、启用和禁用",
+        "created、modified、deleted、tombstone 状态可保存和查询",
+        "提交日志包含开始时间、状态、操作列表、备份路径和错误信息"
+      ],
+      "depends_on": [
+        "T003"
+      ]
+    },
+    {
+      "id": "T005",
+      "title": "实现用户态覆盖层核心操作",
+      "status": "done",
+      "description": "在服务侧实现 copy-on-write 准备、删除标记、变更列表、提交和丢弃逻辑。",
+      "deliverables": [
+        "copy-on-write 准备",
+        "tombstone 创建",
+        "变更列表查询",
+        "带备份的 commit",
+        "discard 清理"
+      ],
+      "test_criteria": [
+        "修改已有文件前会先复制到隔离目录",
+        "新建文件记录为 created",
+        "删除文件只记录 tombstone，不删除真实文件",
+        "discard 不修改真实文件",
+        "commit 正确写回变更并记录日志"
+      ],
+      "depends_on": [
+        "T004"
+      ]
+    },
+    {
+      "id": "T006",
+      "title": "实现 Windows 服务骨架",
+      "status": "done",
+      "description": "创建 PathOverlaySvc，负责元数据、规则状态和用户态覆盖层操作。",
+      "deliverables": [
+        "服务入口",
+        "安装/启动/停止/卸载支持",
+        "结构化日志",
+        "优雅退出处理"
+      ],
+      "test_criteria": [
+        "管理员终端可安装和卸载服务",
+        "服务可正常启动和停止",
+        "服务启动时可打开或创建元数据数据库",
+        "服务记录启动、停止和致命错误日志"
+      ],
+      "depends_on": [
+        "T005"
+      ]
+    },
+    {
+      "id": "T007",
+      "title": "实现 CLI 与服务 IPC",
+      "status": "done",
+      "description": "实现 pathoverlay CLI 通过命名管道调用服务，完成规则管理、变更查询、commit 和 discard。",
+      "deliverables": [
+        "命名管道协议",
+        "请求/响应序列化",
+        "CLI 命令集"
+      ],
+      "test_criteria": [
+        "rule add 可创建规则",
+        "rule show 可列出规则",
+        "changes 可列出变更",
+        "commit 可请求服务提交",
+        "discard 可请求服务丢弃",
+        "服务不可用或权限不足时 CLI 给出清晰错误"
+      ],
+      "depends_on": [
+        "T006"
+      ]
+    },
+    {
+      "id": "T008",
+      "title": "实现 minifilter 驱动骨架",
+      "status": "done",
+      "notes": "2026-04-24 复查：WDK/VS 构建环境已可用，VS 2022 的 x64/Win32 PlatformToolsets 已出现 WindowsKernelModeDriver10.0，Windows Kits 10.0.26100.0 的 km include/lib、fltKernel.h、WindowsDriver.Common.targets 均存在，MSVC Spectre-mitigated libraries 已安装。已将驱动项目固定到 WindowsTargetPlatformVersion 10.0.26100.0，并关闭构建期自动签名；PathOverlayFlt.vcxproj 和 scripts/build.ps1 均可成功生成 PathOverlayFlt.sys。已新增 scripts/package-test-machine.ps1 和 test-machine-package/，可生成签名后的测试机包。已实现 PathOverlaySvc 通过 FilterConnectCommunicationPort 连接驱动通信端口，并新增 pathoverlay driver status 验证命令。虚拟机日志 test-machine-package/PathOverlay-Test-20260424-154645.log 显示：测试签名证书导入成功，PathOverlayFlt 可加载并在清理阶段卸载/删除，驱动通信端口可连接，PathOverlaySvc 可安装启动，pathoverlay rule show 通过命名管道返回 OK no rules，pathoverlay driver status 返回 OK driver connected，无规则时基础文件写入/删除直通正常，清理成功。",
+      "description": "创建 PathOverlayFlt，实现加载、卸载、过滤器注册、通信端口和基础回调。",
+      "deliverables": [
+        "DriverEntry",
+        "过滤器注册",
+        "卸载流程",
+        "通信端口",
+        "create/set-information/directory-control 回调骨架"
+      ],
+      "test_criteria": [
+        "驱动可用 WDK 编译",
+        "测试签名环境可加载驱动",
+        "驱动可正常卸载",
+        "服务可连接驱动通信端口",
+        "未启用规则时不发生重定向"
+      ],
+      "depends_on": [
+        "T002"
+      ]
+    },
+    {
+      "id": "T009",
+      "title": "实现驱动规则匹配与打开重定向",
+      "status": "done",
+      "notes": "2026-04-24：已新增 common/path_overlay_protocol.h，服务启动和 rule add 后通过 FilterSendMessage 将默认规则同步到驱动；服务将 DOS 路径转换为 NT device path，并携带服务进程 PID。驱动新增单规则缓存、source/store 路径匹配、store 排除、服务进程排除，以及 IRP_MJ_CREATE 中的基础重定向：纯读请求仅在 shadow 已存在时重定向，写/创建意图请求重定向到 shadow 路径。Debug 全量构建通过，scripts/test.ps1 用户态测试通过。尚未在测试机验证真实驱动加载后的 source 外路径、禁用规则、shadow 读优先、store 排除和服务进程排除行为，因此任务保持 in_progress。2026-04-24 复查 test-machine-package/PathOverlay-Test-20260424-172542.log：已通过真实测试机自动化间接验证 source 外路径不受影响（无规则 passthrough）和 shadow 读优先/copy-on-write 行为。禁用规则不生效、store 目录不会被递归重定向、服务进程自身操作不会被重定向目前有代码支持或间接现象，但缺少显式 E2E 断言，因此 T009 继续保持 in_progress。后续风险：changes 当前会出现 modified <source目录>，建议在 T012/commit 前处理，避免目录记录影响 commit。2026-04-24 真实测试机自动化验证通过：test-machine-package/PathOverlay-Test-20260424-174426.log 明确执行并通过无规则 passthrough、启用规则后的 shadow 读优先/copy-on-write、disabled rule passthrough、store path passthrough、service process redirection exclusion；T009 验收项已满足。",
+      "description": "实现驱动侧规则缓存、路径匹配和 create/open 重定向。",
+      "deliverables": [
+        "规则缓存",
+        "路径匹配",
+        "打开重定向",
+        "服务和 store 排除逻辑"
+      ],
+      "test_criteria": [
+        "source 外路径不受影响",
+        "禁用规则不生效",
+        "读操作优先读取已有 shadow 文件",
+        "store 目录不会被递归重定向",
+        "服务进程自身操作不会被重定向"
+      ],
+      "depends_on": [
+        "T008",
+        "T006"
+      ]
+    },
+    {
+      "id": "T010",
+      "title": "实现 copy-on-write 与删除拦截",
+      "status": "done",
+      "notes": "2026-04-24：已实现驱动到服务的请求协议和服务侧 FilterGetMessage 监听线程。驱动在命中规则的 IRP_MJ_CREATE 中先查询 tombstone，若路径已删除则返回 STATUS_OBJECT_NAME_NOT_FOUND；写/创建意图打开前通过服务调用 PrepareCopyOnWrite，服务创建 shadow parent、复制真实文件到 shadow 或记录 created 后，驱动再将打开重定向到 shadow。IRP_MJ_SET_INFORMATION 已拦截 FileDispositionInformation/FileDispositionInformationEx 并通过服务记录 tombstone，同时完成请求以避免真实文件被删除；rename 相关 FileInformationClass 在 MVP 中返回 STATUS_NOT_SUPPORTED。2026-04-24 测试机日志 test-machine-package/PathOverlay-Test-20260424-164343.log 显示 rename 不支持符合预期，但删除后 Test-Path 仍可见 tombstone 路径；原因是 IRP_MJ_CREATE 将 DELETE 访问权限误判为写意图，先记录 tombstone 后又执行 PrepareCopyOnWrite，将 change 状态覆盖为 modified。已修正 create 阶段不再把 DELETE 权限当作写意图，也不在 create 阶段记录 tombstone，删除记录统一由 SetInformation 处理。2026-04-24 测试机日志 test-machine-package/PathOverlay-Test-20260424-164952.log 显示服务启动命令返回成功后 CLI IPC 立即不可用，日志缺少服务状态和 PathOverlaySvc.log，暂无法判断是服务退出、管道创建失败还是启动时序问题。已增强 PathOverlaySvc start：等待 SCM 进入 running 且命名管道可用；已增强测试脚本：CLI IPC 失败时输出 sc queryex、PathOverlaySvc.log 和近期 Service Control Manager 事件。2026-04-24 测试机日志 test-machine-package/PathOverlay-Test-20260424-165400.log 显示 IPC 恢复正常，但删除后 Test-Path 仍可见 tombstone 路径；已补充 IRP_MJ_NETWORK_QUERY_OPEN 回调，对 tombstone 路径返回 STATUS_OBJECT_NAME_NOT_FOUND，以覆盖 GetFileAttributes/Test-Path 这类可能绕过 IRP_MJ_CREATE 的存在性查询；同时服务记录 query/copy-on-write/record-delete 请求日志，测试脚本在 tombstone 可见失败时输出 changes 和服务诊断。2026-04-24 测试机日志 test-machine-package/PathOverlay-Test-20260424-165756.log 显示删除文件被记录为 modified，且无 record-delete 日志；原因是 Remove-Item 打开文件时携带 FILE_WRITE_ATTRIBUTES，驱动误判为写意图并先重定向到 shadow，后续删除发生在 store 内被排除。已将 create 写意图收窄到 FILE_WRITE_DATA/FILE_APPEND_DATA/FILE_WRITE_EA 或创建/覆盖 disposition，并补充 FileDispositionInformationEx 的 FILE_DISPOSITION_DELETE 标志检查。2026-04-24 测试机日志 test-machine-package/PathOverlay-Test-20260424-171018.log 显示 record-delete 已成功且 changes 输出包含 tombstone，服务查询也返回 state=tombstone，但 Test-Path 仍报告可见；已在驱动所有主动完成的失败/重解析路径补充 FltSetCallbackDataDirty，确保 STATUS_OBJECT_NAME_NOT_FOUND/STATUS_NOT_SUPPORTED/STATUS_REPARSE 等 IoStatus 修改向下传播；测试脚本在 tombstone 可见失败时增加 File.Exists、OpenRead、Get-Item 和父目录枚举诊断。2026-04-24：已新增 IRP_MJ_QUERY_OPEN 回调；tombstone 命中时 IRP_MJ_NETWORK_QUERY_OPEN 返回 FLT_PREOP_DISALLOW_FASTIO，IRP_MJ_QUERY_OPEN 返回 FLT_PREOP_DISALLOW_FSFILTER_IO，使存在性查询回退到 IRP_MJ_CREATE 的 STATUS_OBJECT_NAME_NOT_FOUND 权威判断；rename/move 拒绝已移到 source/store 路径过滤之后，source 外 rename 不再被规则误拦截；测试包脚本已将 Test-Path、File.Exists、Get-Item、OpenRead 都作为 tombstone 不可见性断言。Debug 全量构建通过，scripts/test.ps1 用户态测试通过，test-machine-package 已重新生成并签名。2026-04-24 真实测试机自动化验证通过：test-machine-package/PathOverlay-Test-20260424-172542.log 显示 copy-on-write 生效，commit 前真实文件不变，删除 source 内真实文件只生成 tombstone，Test-Path/Get-Item/OpenRead 对 tombstone 均表现为不存在，rename/move 在 MVP 中返回不支持，discard 后完成清理；T010 验收项已满足。",
+      "description": "驱动识别写入和删除意图，并调用服务准备 shadow copy 或 tombstone。",
+      "deliverables": [
+        "写入意图识别",
+        "copy-on-write 服务请求",
+        "删除拦截",
+        "tombstone 感知打开逻辑"
+      ],
+      "test_criteria": [
+        "写打开真实文件时先生成 shadow 副本",
+        "commit 前真实文件不被修改",
+        "删除 source 内真实文件时只生成 tombstone",
+        "打开 tombstone 路径表现为文件不存在",
+        "rename/move 在 MVP 中返回不支持"
+      ],
+      "depends_on": [
+        "T009",
+        "T005"
+      ]
+    },
+    {
+      "id": "T011",
+      "title": "实现目录枚举合并",
+      "status": "done",
+      "description": "合并真实目录、隔离目录和 tombstone，返回有效覆盖层视图。",
+      "deliverables": [
+        "目录查询拦截",
+        "real/shadow 合并",
+        "tombstone 过滤",
+        "shadow 元数据优先"
+      ],
+      "test_criteria": [
+        "shadow 中的新文件可在目录列表中看到",
+        "同名 shadow 文件覆盖真实文件显示",
+        "tombstone 对应真实文件被隐藏",
+        "source 外目录枚举正常",
+        "重复枚举不会产生重复项"
+      ],
+      "depends_on": [
+        "T010"
+      ],
+      "notes": "2026-04-24：已实现目录枚举 MVP 路径。协议新增 PrepareDirectoryView；服务侧准备 shadow 目录视图，将真实目录项同步到 shadow、跳过 tombstone 且不覆盖已有 shadow 项；驱动在目录打开时请求服务准备目录视图并重定向到 shadow 目录。已补充用户态 PrepareDirectoryView 测试和测试机目录枚举断言。已通过 scripts/test.ps1、Debug build.ps1、Release package-test-machine.ps1。测试机日志 test-machine-package/PathOverlay-Test-20260424-175043.log 显示 T011 未通过：目录枚举仍暴露 tombstone 文件 delete-me.txt。原因判断为真实目录项可能先被目录视图物化到 shadow，后续 source 删除请求落到 shadow/store 路径时未记录 tombstone。已修复：PrepareDirectoryView 会清理 tombstone 对应的 stale shadow 项；驱动在删除请求命中规则 shadow/store 路径时反推 source 路径并调用 RecordDelete。修复后 scripts/test.ps1、Debug build.ps1、Release package-test-machine.ps1 均通过，test-machine-package 已重新生成并签名。2026-04-24 真实测试机自动化验证通过：test-machine-package/PathOverlay-Test-20260424-175531.log 显示目录枚举测试通过，tombstone 文件 delete-me.txt 对 Get-Item/OpenRead 表现为不存在，changes 输出包含 created.txt、existing.txt modified、delete-me.txt tombstone，最终 PathOverlay test package passed all automated checks；T011 验收项已满足。"
+    },
+    {
+      "id": "T012",
+      "title": "实现端到端 commit 与 discard",
+      "status": "done",
+      "description": "打通 CLI、服务和驱动，实现暂停规则、冲突检测、提交、丢弃和恢复规则。",
+      "deliverables": [
+        "规则暂停/恢复",
+        "占用检测或保守失败",
+        "提交冲突检测",
+        "覆盖/删除前备份",
+        "discard 清理"
+      ],
+      "test_criteria": [
+        "文件被占用或冲突检测失败时 commit 失败",
+        "commit 覆盖或删除真实文件前会备份",
+        "commit 成功后才清理 shadow 数据",
+        "discard 不修改真实文件",
+        "commit 失败后保留可检查或可重试的元数据"
+      ],
+      "depends_on": [
+        "T011",
+        "T007"
+      ],
+      "notes": "2026-04-24：已实现服务侧 commit/discard 期间暂停默认规则并清空驱动规则缓存，操作结束后按原状态恢复规则；CLI commit 使用唯一 commit id，避免重复提交日志主键冲突。公共库 commit 增加提交前预检：检测真实文件占用、shadow 缺失、真实文件与记录的 original_* 基线不一致等冲突，失败时记录 failed commit 日志并保留 changes/shadow 元数据以便检查或重试；成功路径在覆盖/删除前备份真实文件，清理 shadow drive 和 changes 后才记录 done。修正 changes upsert 不再覆盖 original_* 基线，避免多次写入掩盖外部冲突；修正路径规范化在目标文件尚不存在时展开最近存在父目录，保证 created 文件和 source/store 包含判断稳定。已补充用户态测试覆盖冲突失败、占用失败、失败后元数据保留、成功 commit 备份和清理；已补充测试机脚本的端到端 commit 验证，包括规则恢复、真实写回、备份、shadow 清理和 changes 清理。2026-04-24 复查 test-machine-package/PathOverlay-Test-20260424-180645.log：T012 失败是旧 PathOverlayRule-* 目录清理时规则仍启用，驱动重新记录旧 source tombstone，随后 rule add 替换 default 规则但继承旧 changes，commit 预检旧目录时 error=5。已修正 rule add 在当前规则存在 pending changes 时拒绝切换，切换无 pending changes 的规则前清理旧 shadow drive；测试脚本清理前禁用规则，并验证 pending changes 时 rule add 失败。公共库不再把目录 copy-on-write 记录为 modified，目录删除在 MVP 中显式失败，避免目录 tombstone 进入 commit。已通过 Debug build、Debug scripts/test.ps1、Release package-test-machine.ps1、Release scripts/test.ps1。2026-04-24 复查 test-machine-package/PathOverlay-Test-20260424-182607.log：pending changes 时 rule add alternate-source 已正确返回 ERROR，active source 也保持原规则；失败原因是测试脚本用 %TEMP% 产生的 8.3 短路径 C:\\Users\\ADMINI~1 与 rule show 返回的长路径 C:\\Users\\Administrator 做字符串匹配。已修正 test-machine-package/Test-PathOverlay.ps1：新增 canonical path 展开和 source 解析，rule replacement 断言改为比较 rule show 的 canonical source，并让 shadow/backup 路径计算共用规范化逻辑。已通过 PowerShell 解析、Debug scripts/test.ps1、Release package-test-machine.ps1、Release scripts/test.ps1。2026-04-24 真实测试机自动化验证通过：test-machine-package/PathOverlay-Test-20260424-183211.log 显示 pending changes 时 rule add alternate-source 被拒绝且 active source 保持原规则，commit 返回 OK commit completed，commit 后规则恢复 enabled=true，禁用规则后真实路径验证和 changes 清理通过，最终 PathOverlay test package passed all automated checks；T012 验收项已满足。"
+    },
+    {
+      "id": "T013",
+      "title": "补充自动化与手工验证套件",
+      "status": "done",
+      "description": "增加公共库、服务逻辑和驱动 E2E 的测试脚本与说明。",
+      "deliverables": [
+        "公共库单元测试",
+        "服务集成测试",
+        "驱动 E2E 测试说明",
+        "测试数据清理脚本"
+      ],
+      "test_criteria": [
+        "单元测试可通过 scripts/test.ps1 运行",
+        "集成测试使用临时目录并能清理数据",
+        "E2E 说明覆盖创建、修改、删除、枚举、commit、discard",
+        "测试文档说明管理员权限、WDK 和 test-signing 要求"
+      ],
+      "depends_on": [
+        "T012"
+      ],
+      "notes": "2026-04-24：已新增 docs/Testing.md，说明用户态测试、服务集成覆盖、驱动 E2E 流程、管理员权限、WDK/test-signing 和清理方式。已新增 scripts/cleanup-test-data.ps1，可清理本地临时测试数据，并可在管理员 PowerShell 下清理 ProgramData、卸载服务和驱动。scripts/test.ps1 运行前后会调用清理脚本，确保集成测试使用临时目录且不保留测试数据。scripts/package-test-machine.ps1 会把 cleanup-test-data.ps1 打入 test-machine-package，test-machine-package/README.md 已补充创建、修改、删除、枚举、discard、commit 和手工清理说明。验证通过：scripts/test.ps1、scripts/package-test-machine.ps1 -Configuration Release、scripts/test.ps1 -Configuration Release。"
+    },
+    {
+      "id": "T014",
+      "title": "更新贡献者与运维文档",
+      "status": "done",
+      "notes": "2026-04-27：已新增 README.md，面向普通读者和新贡献者说明项目概览、MVP 能力边界、环境要求、构建、测试、测试机驱动包、手工安装、CLI 基础用法、停止卸载和故障排查。已重写 AGENTS.md，面向 Codex/自动化代理保留任务跟踪规则，并明确优先参考 README.md、docs/Testing.md 和 task.json。验证通过：task.json JSON 解析正常，README 中引用的 scripts/build.ps1、scripts/test.ps1、scripts/package-test-machine.ps1、scripts/cleanup-test-data.ps1 和 docs/Testing.md 均存在，scripts/test.ps1 通过。",
+      "description": "更新仓库文档，README 面向普通读者和新贡献者说明项目概览、构建、测试、安装、服务、驱动和故障排查流程；AGENTS.md 面向 Codex/自动化代理说明协作规则和文档入口。",
+      "deliverables": [
+        "新增 README.md",
+        "README 快速开始说明",
+        "README 构建和测试说明",
+        "更新 AGENTS.md 的 Codex/自动化代理说明",
+        "构建和测试说明",
+        "驱动安装说明",
+        "已知限制说明"
+      ],
+      "test_criteria": [
+        "普通读者和新贡献者可从 README.md 找到项目概览、快速开始、构建和测试命令",
+        "AGENTS.md 说明 Codex/自动化代理应优先参考 README.md、docs/Testing.md 和 task.json，并保留任务跟踪规则",
+        "文档说明 Visual Studio、WDK、管理员权限和 test-signing 要求",
+        "已知限制与实际 MVP 边界一致",
+        "文档中的命令与脚本名称一致"
+      ],
+      "depends_on": [
+        "T013"
+      ]
+    },
+    {
+      "id": "T015",
+      "title": "新增编译目录一键安装启动脚本",
+      "status": "done",
+      "notes": "2026-04-27：已新增 scripts/install-start.ps1 和 scripts/Install-Start-PathOverlay.cmd；scripts/build.ps1 会在构建后复制到 x64/<Configuration> 编译输出目录，scripts/package-test-machine.ps1 也会打入测试机包。脚本从自身目录定位 PathOverlayFlt.sys、PathOverlaySvc.exe、pathoverlay.exe、sqlite3.dll，支持非管理员自动提权，检查 test-signing，在需要时用 WDK signtool.exe 创建/使用测试证书签名驱动，安装/加载 PathOverlayFlt，安装/启动 PathOverlaySvc，并执行 rule show 和 driver status 验证。已新增 -ValidateOnly 用于不加载驱动的安全验证。验证通过：PowerShell 脚本语法检查、task.json JSON 解析、scripts/build.ps1、x64/Debug/install-start.ps1 -ValidateOnly、scripts/test.ps1。未在当前会话实际加载驱动或安装服务。",
+      "description": "新增可放置在 x64/<Configuration> 编译输出目录的一键安装启动脚本，用于安装并加载驱动、安装并启动服务、验证 CLI 与驱动连接，并在 README 中说明使用方式。",
+      "deliverables": [
+        "scripts/install-start.ps1",
+        "构建后复制到编译输出目录",
+        "README 使用说明"
+      ],
+      "test_criteria": [
+        "脚本可从编译输出目录运行并定位 PathOverlayFlt.sys、PathOverlaySvc.exe、pathoverlay.exe 和 sqlite3.dll",
+        "脚本包含非管理员自动提权逻辑",
+        "脚本包含 test-signing 检查，并在未启用时给出明确命令和重启提示",
+        "脚本包含驱动测试签名、PathOverlayFlt 安装/加载、PathOverlaySvc 安装/启动、pathoverlay rule show 和 pathoverlay driver status 验证流程",
+        "构建后脚本会复制到 x64/<Configuration> 编译输出目录",
+        "脚本提供 -ValidateOnly 模式，可不加载驱动地验证编译目录产物",
+        "README 说明从 x64/Debug 或 x64/Release 运行一键安装启动脚本"
+      ],
+      "depends_on": [
+        "T014"
+      ]
+    },
+    {
+      "id": "T016",
+      "title": "补充覆盖层日常使用说明",
+      "status": "done",
+      "notes": "2026-04-27：已在 README.md 新增“覆盖层日常使用”章节，说明 rule add、rule show、source/store、shadow 路径格式、changes、discard、commit，以及典型操作流程。验证通过：task.json JSON 解析正常，README 包含 T016 验收点。",
+      "description": "在 README 中补充设置规则后写入路径如何重定向、如何查看变更、如何丢弃变更和如何应用变更。",
+      "deliverables": [
+        "README 覆盖层日常使用说明"
+      ],
+      "test_criteria": [
+        "README 说明 rule add 后 source 内写入会进入 store 的 drive/<盘符>/... 路径",
+        "README 说明 rule show 可查看 source 和 store",
+        "README 说明 changes、discard、commit 的用途和效果",
+        "README 提供一段典型操作流程"
+      ],
+      "depends_on": [
+        "T015"
+      ]
+    },
+    {
+      "id": "T017",
+      "title": "新增编译目录一键卸载脚本",
+      "status": "done",
+      "notes": "2026-04-27：已新增 scripts/uninstall.ps1 和 scripts/Uninstall-PathOverlay.cmd；scripts/build.ps1 会在构建后复制到 x64/<Configuration> 编译输出目录，scripts/package-test-machine.ps1 也会打入测试机包。卸载脚本从自身目录定位 PathOverlaySvc.exe，支持非管理员自动提权，停止并卸载 PathOverlaySvc，卸载 PathOverlayFlt 并删除驱动服务，支持 -RemoveData 清理 %ProgramData%\\PathOverlay，并提供 -ValidateOnly 无副作用验证模式。README 已补充一键卸载说明。验证通过：PowerShell 脚本语法检查、task.json JSON 解析、scripts/build.ps1、x64/Debug/uninstall.ps1 -ValidateOnly、scripts/test.ps1。未在当前会话实际卸载服务或驱动。",
+      "description": "新增可放置在 x64/<Configuration> 编译输出目录的一键卸载脚本，用于停止并卸载 PathOverlaySvc，卸载并删除 PathOverlayFlt 驱动服务，并在 README 中说明使用方式。",
+      "deliverables": [
+        "scripts/uninstall.ps1",
+        "scripts/Uninstall-PathOverlay.cmd",
+        "构建后复制到编译输出目录",
+        "README 卸载说明"
+      ],
+      "test_criteria": [
+        "脚本可从编译输出目录运行并定位 PathOverlaySvc.exe",
+        "脚本在非管理员运行时会请求提权",
+        "脚本会停止并卸载 PathOverlaySvc",
+        "脚本会卸载 PathOverlayFlt 并删除驱动服务",
+        "脚本支持可选清理 ProgramData 数据",
+        "README 说明从 x64/Debug 或 x64/Release 运行一键卸载脚本"
+      ],
+      "depends_on": [
+        "T016"
+      ]
+    }
+  ]
+}

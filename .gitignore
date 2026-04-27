@@ -1,0 +1,39 @@
+# Build outputs
+/x64/
+**/x64/
+/Debug/
+/Release/
+**/Debug/
+**/Release/
+*.obj
+*.pdb
+*.idb
+*.ilk
+*.lib
+*.exp
+*.iobj
+*.ipdb
+*.exe
+*.dll
+*.sys
+*.recipe
+*.tlog/
+*.lastbuildstate
+*.FileListAbsolute.txt
+unsuccessfulbuild
+
+# Generated driver test package
+/test-machine-package/
+
+# Visual Studio user/local files
+.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+
+# Runtime logs and local data
+*.log
+*.db
+*.db-shm
+*.db-wal
