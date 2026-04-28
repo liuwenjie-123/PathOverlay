@@ -79,6 +79,14 @@ function Find-SqliteRuntime {
 
 & (Join-Path $PSScriptRoot "build.ps1") -Configuration $Configuration -Platform $Platform
 
+if (Test-Path $packageRoot) {
+    $resolvedPackageRoot = (Resolve-Path $packageRoot).Path
+    $resolvedRepoRoot = (Resolve-Path $repoRoot).Path
+    if (-not $resolvedPackageRoot.StartsWith($resolvedRepoRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to clean package path outside repository: $resolvedPackageRoot"
+    }
+    Remove-Item -LiteralPath $resolvedPackageRoot -Recurse -Force
+}
 New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
 
 $requiredFiles = @(
@@ -90,7 +98,10 @@ $requiredFiles = @(
     @{ Source = Join-Path $repoRoot "scripts\install-start.ps1"; Target = "install-start.ps1" },
     @{ Source = Join-Path $repoRoot "scripts\Install-Start-PathOverlay.cmd"; Target = "Install-Start-PathOverlay.cmd" },
     @{ Source = Join-Path $repoRoot "scripts\uninstall.ps1"; Target = "uninstall.ps1" },
-    @{ Source = Join-Path $repoRoot "scripts\Uninstall-PathOverlay.cmd"; Target = "Uninstall-PathOverlay.cmd" }
+    @{ Source = Join-Path $repoRoot "scripts\Uninstall-PathOverlay.cmd"; Target = "Uninstall-PathOverlay.cmd" },
+    @{ Source = Join-Path $repoRoot "scripts\Test-PathOverlay.ps1"; Target = "Test-PathOverlay.ps1" },
+    @{ Source = Join-Path $repoRoot "scripts\Run-PathOverlay-Test.cmd"; Target = "Run-PathOverlay-Test.cmd" },
+    @{ Source = Join-Path $repoRoot "scripts\test-machine-package-README.md"; Target = "README.md" }
 )
 
 foreach ($file in $requiredFiles) {

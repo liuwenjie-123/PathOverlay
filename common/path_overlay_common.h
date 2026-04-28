@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace pathoverlay {
 
@@ -16,6 +17,7 @@ enum class RuleValidationCode {
     kSourceIsNotDirectory,
     kSourceIsReparsePoint,
     kSourceStoreOverlap,
+    kRuleOverlap,
     kRealPathOutsideSource,
 };
 
@@ -38,8 +40,13 @@ struct OverlayRule {
 
 std::wstring ProductName();
 std::wstring DefaultStoreRoot();
+std::wstring DefaultStoreRootForRule(const std::wstring& ruleId);
+std::wstring GenerateRuleId();
 std::wstring NormalizePath(const std::wstring& path);
 RuleValidationResult ValidateOverlayRule(const OverlayRule& rule);
+RuleValidationResult ValidateOverlayRuleSet(
+    const std::vector<OverlayRule>& existingRules,
+    const OverlayRule& candidate);
 RuleValidationResult ValidateRealPathInRule(const OverlayRule& rule, const std::wstring& realPath);
 std::optional<std::wstring> MapRealPathToShadowPath(const OverlayRule& rule, const std::wstring& realPath);
 

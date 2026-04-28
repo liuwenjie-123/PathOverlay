@@ -7,11 +7,17 @@
 
 DRIVER_INITIALIZE DriverEntry;
 
-typedef struct PATHOVERLAY_RULE_CACHE {
-    BOOLEAN Enabled;
-    ULONG ServiceProcessId;
+typedef struct PATHOVERLAY_RULE_ENTRY {
+    WCHAR RuleId[PATHOVERLAY_MAX_RULE_ID_CHARS];
     WCHAR SourceNtPath[PATHOVERLAY_MAX_PATH_CHARS];
+    WCHAR SourceAliasNtPath[PATHOVERLAY_MAX_PATH_CHARS];
     WCHAR StoreNtPath[PATHOVERLAY_MAX_PATH_CHARS];
+} PATHOVERLAY_RULE_ENTRY;
+
+typedef struct PATHOVERLAY_RULE_CACHE {
+    ULONG Count;
+    ULONG ServiceProcessId;
+    PATHOVERLAY_RULE_ENTRY Rules[PATHOVERLAY_MAX_DRIVER_RULES];
 } PATHOVERLAY_RULE_CACHE;
 
 static PFLT_FILTER gFilterHandle = NULL;
@@ -58,6 +64,21 @@ PathOverlayPreQueryOpen(
     _Inout_ PFLT_CALLBACK_DATA Data,
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
     _Flt_CompletionContext_Outptr_ PVOID* CompletionContext
+    );
+
+static NTSTATUS
+PathOverlayBuildShadowPath(
+    _In_ PCUNICODE_STRING Store,
+    _In_ PCUNICODE_STRING Source,
+    _In_ PCUNICODE_STRING RealPath,
+    _Out_ PUNICODE_STRING ShadowPath
+    );
+
+static NTSTATUS
+PathOverlayAllocateUnicodeStringCopy(
+    _In_ PCUNICODE_STRING Source,
+    _Out_ PUNICODE_STRING Destination,
+    _In_ ULONG Tag
     );
 
 static NTSTATUS
@@ -188,21 +209,6 @@ PathOverlayTrimTrailingSlashes(
     }
 }
 
-static BOOLEAN
-PathOverlayRuleSnapshot(
-    _Out_ PATHOVERLAY_RULE_CACHE* Snapshot
-    )
-{
-    BOOLEAN enabled;
-
-    ExAcquireFastMutex(&gRuleLock);
-    *Snapshot = gRuleCache;
-    enabled = gRuleCache.Enabled;
-    ExReleaseFastMutex(&gRuleLock);
-
-    return enabled;
-}
-
 static VOID
 PathOverlayClearRule()
 {
@@ -216,26 +222,51 @@ PathOverlaySetRule(
     _In_ const PATHOVERLAY_DRIVER_RULE_MESSAGE* Message
     )
 {
-    if (Message->SourceNtPath[0] == UNICODE_NULL || Message->StoreNtPath[0] == UNICODE_NULL) {
+    PATHOVERLAY_RULE_ENTRY* entry;
+
+    if (Message->Enabled == 0) {
+        return STATUS_SUCCESS;
+    }
+
+    if (Message->RuleId[0] == UNICODE_NULL ||
+        Message->SourceNtPath[0] == UNICODE_NULL ||
+        Message->StoreNtPath[0] == UNICODE_NULL) {
         return STATUS_INVALID_PARAMETER;
     }
 
     ExAcquireFastMutex(&gRuleLock);
-    RtlZeroMemory(&gRuleCache, sizeof(gRuleCache));
-    gRuleCache.Enabled = Message->Enabled != 0;
+    if (gRuleCache.Count >= PATHOVERLAY_MAX_DRIVER_RULES) {
+        ExReleaseFastMutex(&gRuleLock);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
     gRuleCache.ServiceProcessId = Message->ServiceProcessId;
+    entry = &gRuleCache.Rules[gRuleCache.Count];
+    RtlZeroMemory(entry, sizeof(*entry));
     PathOverlayCopyNullTerminated(
-        gRuleCache.SourceNtPath,
+        entry->RuleId,
+        PATHOVERLAY_MAX_RULE_ID_CHARS,
+        Message->RuleId,
+        PathOverlayNullTerminatedLength(Message->RuleId, PATHOVERLAY_MAX_RULE_ID_CHARS));
+    PathOverlayCopyNullTerminated(
+        entry->SourceNtPath,
         PATHOVERLAY_MAX_PATH_CHARS,
         Message->SourceNtPath,
         PathOverlayNullTerminatedLength(Message->SourceNtPath, PATHOVERLAY_MAX_PATH_CHARS));
     PathOverlayCopyNullTerminated(
-        gRuleCache.StoreNtPath,
+        entry->SourceAliasNtPath,
+        PATHOVERLAY_MAX_PATH_CHARS,
+        Message->SourceAliasNtPath,
+        PathOverlayNullTerminatedLength(Message->SourceAliasNtPath, PATHOVERLAY_MAX_PATH_CHARS));
+    PathOverlayCopyNullTerminated(
+        entry->StoreNtPath,
         PATHOVERLAY_MAX_PATH_CHARS,
         Message->StoreNtPath,
         PathOverlayNullTerminatedLength(Message->StoreNtPath, PATHOVERLAY_MAX_PATH_CHARS));
-    PathOverlayTrimTrailingSlashes(gRuleCache.SourceNtPath);
-    PathOverlayTrimTrailingSlashes(gRuleCache.StoreNtPath);
+    PathOverlayTrimTrailingSlashes(entry->SourceNtPath);
+    PathOverlayTrimTrailingSlashes(entry->SourceAliasNtPath);
+    PathOverlayTrimTrailingSlashes(entry->StoreNtPath);
+    ++gRuleCache.Count;
     ExReleaseFastMutex(&gRuleLock);
 
     return STATUS_SUCCESS;
@@ -267,6 +298,290 @@ PathOverlaySameOrChildPath(
 
     parentChars = Parent->Length / sizeof(WCHAR);
     return Child->Buffer[parentChars] == L'\\';
+}
+
+static BOOLEAN
+PathOverlayNextPathComponent(
+    _In_reads_(TotalChars) const WCHAR* Value,
+    _In_ USHORT TotalChars,
+    _Inout_ USHORT* OffsetChars,
+    _Out_ USHORT* ComponentStartChars,
+    _Out_ USHORT* ComponentLengthChars
+    )
+{
+    USHORT index = *OffsetChars;
+
+    while (index < TotalChars && Value[index] == L'\\') {
+        ++index;
+    }
+    if (index >= TotalChars) {
+        *OffsetChars = index;
+        return FALSE;
+    }
+
+    *ComponentStartChars = index;
+    while (index < TotalChars && Value[index] != L'\\') {
+        ++index;
+    }
+
+    *ComponentLengthChars = index - *ComponentStartChars;
+    *OffsetChars = index;
+    return TRUE;
+}
+
+static BOOLEAN
+PathOverlayEqualPathComponent(
+    _In_reads_(LeftChars) const WCHAR* Left,
+    _In_ USHORT LeftChars,
+    _In_reads_(RightChars) const WCHAR* Right,
+    _In_ USHORT RightChars
+    )
+{
+    UNICODE_STRING leftString;
+    UNICODE_STRING rightString;
+
+    leftString.Buffer = (PWCHAR)Left;
+    leftString.Length = LeftChars * sizeof(WCHAR);
+    leftString.MaximumLength = leftString.Length;
+
+    rightString.Buffer = (PWCHAR)Right;
+    rightString.Length = RightChars * sizeof(WCHAR);
+    rightString.MaximumLength = rightString.Length;
+
+    return RtlEqualUnicodeString(&leftString, &rightString, TRUE);
+}
+
+static BOOLEAN
+PathOverlayMatchSourcePathPrefix(
+    _In_ PCUNICODE_STRING Source,
+    _In_opt_ PCUNICODE_STRING SourceAlias,
+    _In_ PCUNICODE_STRING Path,
+    _Out_ USHORT* MatchedPrefixChars
+    )
+{
+    USHORT sourceChars = Source->Length / sizeof(WCHAR);
+    USHORT sourceAliasChars = SourceAlias != NULL ? SourceAlias->Length / sizeof(WCHAR) : 0;
+    USHORT pathChars = Path->Length / sizeof(WCHAR);
+    USHORT sourceOffset = 0;
+    USHORT sourceAliasOffset = 0;
+    USHORT pathOffset = 0;
+    USHORT sourceStart;
+    USHORT sourceLength;
+    USHORT sourceAliasStart = 0;
+    USHORT sourceAliasLength = 0;
+    USHORT pathStart;
+    USHORT pathLength;
+    BOOLEAN hasSourceAlias = SourceAlias != NULL && SourceAlias->Length > 0;
+
+    if (Source->Length == 0 || Path->Length == 0) {
+        return FALSE;
+    }
+
+    while (PathOverlayNextPathComponent(
+        Source->Buffer,
+        sourceChars,
+        &sourceOffset,
+        &sourceStart,
+        &sourceLength)) {
+        BOOLEAN longMatched;
+        BOOLEAN aliasMatched = FALSE;
+        BOOLEAN aliasComponentAvailable = FALSE;
+
+        if (!PathOverlayNextPathComponent(
+            Path->Buffer,
+            pathChars,
+            &pathOffset,
+            &pathStart,
+            &pathLength)) {
+            return FALSE;
+        }
+
+        if (hasSourceAlias) {
+            aliasComponentAvailable = PathOverlayNextPathComponent(
+                SourceAlias->Buffer,
+                sourceAliasChars,
+                &sourceAliasOffset,
+                &sourceAliasStart,
+                &sourceAliasLength);
+        }
+
+        longMatched = PathOverlayEqualPathComponent(
+            Path->Buffer + pathStart,
+            pathLength,
+            Source->Buffer + sourceStart,
+            sourceLength);
+        if (!longMatched && aliasComponentAvailable) {
+            aliasMatched = PathOverlayEqualPathComponent(
+                Path->Buffer + pathStart,
+                pathLength,
+                SourceAlias->Buffer + sourceAliasStart,
+                sourceAliasLength);
+        }
+
+        if (!longMatched && !aliasMatched) {
+            return FALSE;
+        }
+    }
+
+    *MatchedPrefixChars = pathOffset;
+    return TRUE;
+}
+
+static BOOLEAN
+PathOverlayFindSourceRule(
+    _In_ PCUNICODE_STRING Path,
+    _Out_ PATHOVERLAY_RULE_ENTRY* MatchedRule,
+    _Out_writes_opt_(PATHOVERLAY_MAX_PATH_CHARS) PWCHAR MatchedSourceNtPath
+    )
+{
+    ULONG index;
+    BOOLEAN found = FALSE;
+
+    if (MatchedSourceNtPath != NULL) {
+        MatchedSourceNtPath[0] = UNICODE_NULL;
+    }
+
+    for (index = 0; index < gRuleCache.Count; ++index) {
+        UNICODE_STRING source;
+        UNICODE_STRING sourceAlias;
+        USHORT matchedPrefixChars = 0;
+        BOOLEAN matched;
+
+        RtlInitUnicodeString(&source, gRuleCache.Rules[index].SourceNtPath);
+        if (gRuleCache.Rules[index].SourceAliasNtPath[0] != UNICODE_NULL) {
+            RtlInitUnicodeString(&sourceAlias, gRuleCache.Rules[index].SourceAliasNtPath);
+            matched = PathOverlayMatchSourcePathPrefix(&source, &sourceAlias, Path, &matchedPrefixChars);
+        } else {
+            matched = PathOverlayMatchSourcePathPrefix(&source, NULL, Path, &matchedPrefixChars);
+        }
+
+        if (!matched) {
+            continue;
+        }
+
+        if (found) {
+            return FALSE;
+        }
+
+        *MatchedRule = gRuleCache.Rules[index];
+        if (MatchedSourceNtPath != NULL) {
+            PathOverlayCopyNullTerminated(
+                MatchedSourceNtPath,
+                PATHOVERLAY_MAX_PATH_CHARS,
+                Path->Buffer,
+                matchedPrefixChars);
+        }
+        found = TRUE;
+    }
+
+    return found;
+}
+
+static BOOLEAN
+PathOverlayFindStoreRule(
+    _In_ PCUNICODE_STRING Path,
+    _Out_ PATHOVERLAY_RULE_ENTRY* MatchedRule
+    )
+{
+    ULONG index;
+    BOOLEAN found = FALSE;
+
+    for (index = 0; index < gRuleCache.Count; ++index) {
+        UNICODE_STRING store;
+        RtlInitUnicodeString(&store, gRuleCache.Rules[index].StoreNtPath);
+        if (!PathOverlaySameOrChildPath(&store, Path)) {
+            continue;
+        }
+
+        if (found) {
+            return FALSE;
+        }
+
+        *MatchedRule = gRuleCache.Rules[index];
+        found = TRUE;
+    }
+
+    return found;
+}
+
+static BOOLEAN
+PathOverlayIsStorePathLocked(
+    _In_ PCUNICODE_STRING Path
+    )
+{
+    ULONG index;
+
+    for (index = 0; index < gRuleCache.Count; ++index) {
+        UNICODE_STRING store;
+        RtlInitUnicodeString(&store, gRuleCache.Rules[index].StoreNtPath);
+        if (PathOverlaySameOrChildPath(&store, Path)) {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+static BOOLEAN
+PathOverlayIsServiceProcess(
+    _In_ ULONG ProcessId
+    )
+{
+    BOOLEAN result;
+
+    ExAcquireFastMutex(&gRuleLock);
+    result = gRuleCache.Count > 0 && ProcessId == gRuleCache.ServiceProcessId;
+    ExReleaseFastMutex(&gRuleLock);
+
+    return result;
+}
+
+static BOOLEAN
+PathOverlayFindSourceRuleForPath(
+    _In_ PCUNICODE_STRING Path,
+    _Out_ PATHOVERLAY_RULE_ENTRY* MatchedRule,
+    _Out_writes_opt_(PATHOVERLAY_MAX_PATH_CHARS) PWCHAR MatchedSourceNtPath
+    )
+{
+    BOOLEAN found;
+
+    ExAcquireFastMutex(&gRuleLock);
+    if (gRuleCache.Count == 0 || PathOverlayIsStorePathLocked(Path)) {
+        ExReleaseFastMutex(&gRuleLock);
+        return FALSE;
+    }
+
+    found = PathOverlayFindSourceRule(Path, MatchedRule, MatchedSourceNtPath);
+    ExReleaseFastMutex(&gRuleLock);
+    return found;
+}
+
+static BOOLEAN
+PathOverlayFindSourceOrStoreRuleForPath(
+    _In_ PCUNICODE_STRING Path,
+    _Out_ PATHOVERLAY_RULE_ENTRY* MatchedRule,
+    _Out_ BOOLEAN* SourcePath,
+    _Out_ BOOLEAN* StorePath
+    )
+{
+    BOOLEAN sourcePath;
+    BOOLEAN storePath = FALSE;
+
+    ExAcquireFastMutex(&gRuleLock);
+    if (gRuleCache.Count == 0) {
+        ExReleaseFastMutex(&gRuleLock);
+        return FALSE;
+    }
+
+    sourcePath = PathOverlayFindSourceRule(Path, MatchedRule, NULL);
+    if (!sourcePath) {
+        storePath = PathOverlayFindStoreRule(Path, MatchedRule);
+    }
+    ExReleaseFastMutex(&gRuleLock);
+
+    *SourcePath = sourcePath;
+    *StorePath = storePath;
+    return sourcePath || storePath;
 }
 
 static BOOLEAN
@@ -355,7 +670,9 @@ PathOverlayNtPathExists(
 static NTSTATUS
 PathOverlaySendServiceRequest(
     _In_ ULONG Command,
+    _In_reads_(PATHOVERLAY_MAX_RULE_ID_CHARS) const WCHAR* RuleId,
     _In_ PCUNICODE_STRING RealPath,
+    _In_opt_ PCUNICODE_STRING TargetPath,
     _Out_opt_ PATHOVERLAY_SERVICE_RESPONSE* ServiceResponse
     )
 {
@@ -372,15 +689,30 @@ PathOverlaySendServiceRequest(
     if (RealPath->Length >= sizeof(request.RealNtPath)) {
         return STATUS_NAME_TOO_LONG;
     }
+    if (TargetPath != NULL && TargetPath->Length >= sizeof(request.TargetNtPath)) {
+        return STATUS_NAME_TOO_LONG;
+    }
 
     RtlZeroMemory(&request, sizeof(request));
     request.Version = PATHOVERLAY_PROTOCOL_VERSION;
     request.Command = Command;
     PathOverlayCopyNullTerminated(
+        request.RuleId,
+        PATHOVERLAY_MAX_RULE_ID_CHARS,
+        RuleId,
+        PathOverlayNullTerminatedLength(RuleId, PATHOVERLAY_MAX_RULE_ID_CHARS));
+    PathOverlayCopyNullTerminated(
         request.RealNtPath,
         PATHOVERLAY_MAX_PATH_CHARS,
         RealPath->Buffer,
         RealPath->Length / sizeof(WCHAR));
+    if (TargetPath != NULL) {
+        PathOverlayCopyNullTerminated(
+            request.TargetNtPath,
+            PATHOVERLAY_MAX_PATH_CHARS,
+            TargetPath->Buffer,
+            TargetPath->Length / sizeof(WCHAR));
+    }
 
     timeout.QuadPart = -5 * 1000 * 1000 * 10LL;
     status = FltSendMessage(
@@ -402,47 +734,96 @@ PathOverlaySendServiceRequest(
     return (NTSTATUS)response.Status;
 }
 
+static NTSTATUS
+PathOverlayGetFileNameInformationWithFallback(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _Outptr_ PFLT_FILE_NAME_INFORMATION* NameInfo
+    )
+{
+    NTSTATUS status;
+
+    status = FltGetFileNameInformation(
+        Data,
+        FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT,
+        NameInfo);
+    if (NT_SUCCESS(status)) {
+        return status;
+    }
+
+    return FltGetFileNameInformation(
+        Data,
+        FLT_FILE_NAME_OPENED | FLT_FILE_NAME_QUERY_DEFAULT,
+        NameInfo);
+}
+
 static BOOLEAN
-PathOverlayIsTombstonedOverlayPath(
+PathOverlayShouldDeferQueryOpen(
     _In_ PFLT_CALLBACK_DATA Data
     )
 {
     NTSTATUS status;
     PFLT_FILE_NAME_INFORMATION nameInfo = NULL;
-    PATHOVERLAY_RULE_CACHE rule;
+    PATHOVERLAY_RULE_ENTRY rule;
+    WCHAR matchedSourceNtPath[PATHOVERLAY_MAX_PATH_CHARS] = { 0 };
     UNICODE_STRING source;
     UNICODE_STRING store;
+    UNICODE_STRING shadowPath = { 0 };
     PATHOVERLAY_SERVICE_RESPONSE serviceResponse = { 0 };
+    BOOLEAN shouldDefer = FALSE;
 
-    if (!PathOverlayRuleSnapshot(&rule)) {
+    if (PathOverlayIsServiceProcess(FltGetRequestorProcessId(Data))) {
         return FALSE;
     }
 
-    if (FltGetRequestorProcessId(Data) == rule.ServiceProcessId) {
-        return FALSE;
-    }
-
-    RtlInitUnicodeString(&source, rule.SourceNtPath);
-    RtlInitUnicodeString(&store, rule.StoreNtPath);
-
-    status = FltGetFileNameInformation(
-        Data,
-        FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT,
-        &nameInfo);
+    status = PathOverlayGetFileNameInformationWithFallback(Data, &nameInfo);
     if (!NT_SUCCESS(status)) {
         return FALSE;
     }
 
-    if (!PathOverlaySameOrChildPath(&source, &nameInfo->Name) ||
-        PathOverlaySameOrChildPath(&store, &nameInfo->Name)) {
+    if (!PathOverlayFindSourceRuleForPath(&nameInfo->Name, &rule, matchedSourceNtPath)) {
         FltReleaseFileNameInformation(nameInfo);
         return FALSE;
     }
 
-    status = PathOverlaySendServiceRequest(PathOverlayServiceCommandQueryPath, &nameInfo->Name, &serviceResponse);
+    RtlInitUnicodeString(
+        &source,
+        matchedSourceNtPath[0] != UNICODE_NULL ? matchedSourceNtPath : rule.SourceNtPath);
+    RtlInitUnicodeString(&store, rule.StoreNtPath);
+
+    status = PathOverlaySendServiceRequest(
+        PathOverlayServiceCommandQueryPath,
+        rule.RuleId,
+        &nameInfo->Name,
+        NULL,
+        &serviceResponse);
+
+    if (NT_SUCCESS(status) && serviceResponse.PathState == PathOverlayPathStateTombstone) {
+        shouldDefer = TRUE;
+        goto Exit;
+    }
+    if (NT_SUCCESS(status) && serviceResponse.ShadowNtPath[0] != UNICODE_NULL) {
+        UNICODE_STRING responseShadowPath;
+
+        RtlInitUnicodeString(&responseShadowPath, serviceResponse.ShadowNtPath);
+        status = PathOverlayAllocateUnicodeStringCopy(&responseShadowPath, &shadowPath, 'OPhP');
+        if (NT_SUCCESS(status) && PathOverlayNtPathExists(&shadowPath)) {
+            shouldDefer = TRUE;
+        }
+        goto Exit;
+    }
+
+    status = PathOverlayBuildShadowPath(&store, &source, &nameInfo->Name, &shadowPath);
+    if (NT_SUCCESS(status) && PathOverlayNtPathExists(&shadowPath)) {
+        shouldDefer = TRUE;
+    }
+
+Exit:
+    if (shadowPath.Buffer != NULL) {
+        ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
+    }
     FltReleaseFileNameInformation(nameInfo);
 
-    return NT_SUCCESS(status) && serviceResponse.PathState == PathOverlayPathStateTombstone;
+    return shouldDefer;
 }
 
 static NTSTATUS
@@ -453,6 +834,10 @@ PathOverlayBuildShadowPath(
     _Out_ PUNICODE_STRING ShadowPath
     )
 {
+    if (RealPath->Length < Source->Length) {
+        return STATUS_OBJECT_PATH_INVALID;
+    }
+
     USHORT suffixLength = RealPath->Length - Source->Length;
     USHORT totalLength = Store->Length + suffixLength;
     PWCHAR buffer;
@@ -475,6 +860,33 @@ PathOverlayBuildShadowPath(
     ShadowPath->Buffer = buffer;
     ShadowPath->Length = totalLength;
     ShadowPath->MaximumLength = totalLength + sizeof(WCHAR);
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+PathOverlayAllocateUnicodeStringCopy(
+    _In_ PCUNICODE_STRING Source,
+    _Out_ PUNICODE_STRING Destination,
+    _In_ ULONG Tag
+    )
+{
+    PWCHAR buffer;
+
+    if (Source->Length == 0 || Source->Length > (PATHOVERLAY_MAX_PATH_CHARS - 1) * sizeof(WCHAR)) {
+        return STATUS_NAME_TOO_LONG;
+    }
+
+    buffer = ExAllocatePool2(POOL_FLAG_PAGED, Source->Length + sizeof(WCHAR), Tag);
+    if (buffer == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    RtlCopyMemory(buffer, Source->Buffer, Source->Length);
+    buffer[Source->Length / sizeof(WCHAR)] = UNICODE_NULL;
+
+    Destination->Buffer = buffer;
+    Destination->Length = Source->Length;
+    Destination->MaximumLength = Source->Length + sizeof(WCHAR);
     return STATUS_SUCCESS;
 }
 
@@ -586,7 +998,8 @@ PathOverlayPreCreate(
 {
     NTSTATUS status;
     PFLT_FILE_NAME_INFORMATION nameInfo = NULL;
-    PATHOVERLAY_RULE_CACHE rule;
+    PATHOVERLAY_RULE_ENTRY rule;
+    WCHAR matchedSourceNtPath[PATHOVERLAY_MAX_PATH_CHARS] = { 0 };
     UNICODE_STRING source;
     UNICODE_STRING store;
     UNICODE_STRING shadowPath = { 0 };
@@ -595,31 +1008,25 @@ PathOverlayPreCreate(
 
     *CompletionContext = NULL;
 
-    if (!PathOverlayRuleSnapshot(&rule)) {
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
-    }
-
     requestorProcessId = FltGetRequestorProcessId(Data);
-    if (requestorProcessId == rule.ServiceProcessId) {
+    if (PathOverlayIsServiceProcess(requestorProcessId)) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
-    RtlInitUnicodeString(&source, rule.SourceNtPath);
-    RtlInitUnicodeString(&store, rule.StoreNtPath);
-
-    status = FltGetFileNameInformation(
-        Data,
-        FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT,
-        &nameInfo);
+    status = PathOverlayGetFileNameInformationWithFallback(Data, &nameInfo);
     if (!NT_SUCCESS(status)) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
-    if (!PathOverlaySameOrChildPath(&source, &nameInfo->Name) ||
-        PathOverlaySameOrChildPath(&store, &nameInfo->Name)) {
+    if (!PathOverlayFindSourceRuleForPath(&nameInfo->Name, &rule, matchedSourceNtPath)) {
         FltReleaseFileNameInformation(nameInfo);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
+
+    RtlInitUnicodeString(
+        &source,
+        matchedSourceNtPath[0] != UNICODE_NULL ? matchedSourceNtPath : rule.SourceNtPath);
+    RtlInitUnicodeString(&store, rule.StoreNtPath);
 
     status = PathOverlayBuildShadowPath(&store, &source, &nameInfo->Name, &shadowPath);
     if (!NT_SUCCESS(status)) {
@@ -628,7 +1035,12 @@ PathOverlayPreCreate(
     }
 
     PATHOVERLAY_SERVICE_RESPONSE serviceResponse = { 0 };
-    status = PathOverlaySendServiceRequest(PathOverlayServiceCommandQueryPath, &nameInfo->Name, &serviceResponse);
+    status = PathOverlaySendServiceRequest(
+        PathOverlayServiceCommandQueryPath,
+        rule.RuleId,
+        &nameInfo->Name,
+        NULL,
+        &serviceResponse);
     if (NT_SUCCESS(status) && serviceResponse.PathState == PathOverlayPathStateTombstone) {
         FltReleaseFileNameInformation(nameInfo);
         ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
@@ -637,9 +1049,35 @@ PathOverlayPreCreate(
         FltSetCallbackDataDirty(Data);
         return FLT_PREOP_COMPLETE;
     }
+    if (NT_SUCCESS(status) && serviceResponse.ShadowNtPath[0] != UNICODE_NULL) {
+        UNICODE_STRING responseShadowPath;
 
-    if (PathOverlayIsDirectoryOpen(Data)) {
-        status = PathOverlaySendServiceRequest(PathOverlayServiceCommandPrepareDirectoryView, &nameInfo->Name, NULL);
+        ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
+        shadowPath.Buffer = NULL;
+        shadowPath.Length = 0;
+        shadowPath.MaximumLength = 0;
+        RtlInitUnicodeString(&responseShadowPath, serviceResponse.ShadowNtPath);
+        status = PathOverlayAllocateUnicodeStringCopy(&responseShadowPath, &shadowPath, 'OPhP');
+        if (!NT_SUCCESS(status)) {
+            FltReleaseFileNameInformation(nameInfo);
+            return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        }
+    }
+
+    writeIntent = PathOverlayHasWriteIntent(Data);
+    if (!writeIntent && PathOverlayIsDirectoryOpen(Data)) {
+        if (!PathOverlayNtPathExists(&nameInfo->Name) && !PathOverlayNtPathExists(&shadowPath)) {
+            FltReleaseFileNameInformation(nameInfo);
+            ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
+            return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        }
+
+        status = PathOverlaySendServiceRequest(
+            PathOverlayServiceCommandPrepareDirectoryView,
+            rule.RuleId,
+            &nameInfo->Name,
+            NULL,
+            NULL);
         if (NT_SUCCESS(status)) {
             FltReleaseFileNameInformation(nameInfo);
             status = IoReplaceFileObjectName(FltObjects->FileObject, shadowPath.Buffer, shadowPath.Length);
@@ -654,9 +1092,13 @@ PathOverlayPreCreate(
         }
     }
 
-    writeIntent = PathOverlayHasWriteIntent(Data);
     if (writeIntent) {
-        status = PathOverlaySendServiceRequest(PathOverlayServiceCommandPrepareCopyOnWrite, &nameInfo->Name, NULL);
+        status = PathOverlaySendServiceRequest(
+            PathOverlayServiceCommandPrepareCopyOnWrite,
+            rule.RuleId,
+            &nameInfo->Name,
+            NULL,
+            NULL);
         if (!NT_SUCCESS(status)) {
             FltReleaseFileNameInformation(nameInfo);
             ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
@@ -694,27 +1136,21 @@ PathOverlayPreSetInformation(
 {
     NTSTATUS status;
     PFLT_FILE_NAME_INFORMATION nameInfo = NULL;
-    PATHOVERLAY_RULE_CACHE rule;
+    PATHOVERLAY_RULE_ENTRY rule;
     UNICODE_STRING source;
     UNICODE_STRING store;
     UNICODE_STRING deleteRealPath = { 0 };
+    UNICODE_STRING renameSourceRealPath = { 0 };
+    UNICODE_STRING renameTargetRealPath = { 0 };
     FILE_INFORMATION_CLASS informationClass;
     BOOLEAN sourcePath;
     BOOLEAN storePath;
 
-    UNREFERENCED_PARAMETER(FltObjects);
     *CompletionContext = NULL;
 
-    if (!PathOverlayRuleSnapshot(&rule)) {
+    if (PathOverlayIsServiceProcess(FltGetRequestorProcessId(Data))) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
-
-    if (FltGetRequestorProcessId(Data) == rule.ServiceProcessId) {
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
-    }
-
-    RtlInitUnicodeString(&source, rule.SourceNtPath);
-    RtlInitUnicodeString(&store, rule.StoreNtPath);
 
     status = FltGetFileNameInformation(
         Data,
@@ -724,21 +1160,106 @@ PathOverlayPreSetInformation(
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
-    sourcePath = PathOverlaySameOrChildPath(&source, &nameInfo->Name);
-    storePath = PathOverlaySameOrChildPath(&store, &nameInfo->Name);
-    if (!sourcePath && !storePath) {
+    if (!PathOverlayFindSourceOrStoreRuleForPath(&nameInfo->Name, &rule, &sourcePath, &storePath)) {
         FltReleaseFileNameInformation(nameInfo);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
+    RtlInitUnicodeString(&source, rule.SourceNtPath);
+    RtlInitUnicodeString(&store, rule.StoreNtPath);
+
     informationClass = Data->Iopb->Parameters.SetFileInformation.FileInformationClass;
-    if (sourcePath &&
-        (informationClass == FileRenameInformation ||
-         informationClass == FileRenameInformationEx ||
-         informationClass == FileRenameInformationBypassAccessCheck ||
-         informationClass == FileRenameInformationExBypassAccessCheck)) {
+    if (informationClass == FileRenameInformation ||
+        informationClass == FileRenameInformationEx ||
+        informationClass == FileRenameInformationBypassAccessCheck ||
+        informationClass == FileRenameInformationExBypassAccessCheck) {
+        FILE_RENAME_INFORMATION* renameInfo;
+        PFLT_FILE_NAME_INFORMATION destinationInfo = NULL;
+        PATHOVERLAY_RULE_ENTRY targetRule;
+        BOOLEAN targetSourcePath = FALSE;
+        BOOLEAN targetStorePath = FALSE;
+
+        renameInfo = (FILE_RENAME_INFORMATION*)Data->Iopb->Parameters.SetFileInformation.InfoBuffer;
+        if (renameInfo == NULL || renameInfo->FileNameLength == 0) {
+            FltReleaseFileNameInformation(nameInfo);
+            Data->IoStatus.Status = STATUS_INVALID_PARAMETER;
+            Data->IoStatus.Information = 0;
+            FltSetCallbackDataDirty(Data);
+            return FLT_PREOP_COMPLETE;
+        }
+
+        status = FltGetDestinationFileNameInformation(
+            FltObjects->Instance,
+            FltObjects->FileObject,
+            renameInfo->RootDirectory,
+            renameInfo->FileName,
+            renameInfo->FileNameLength,
+            FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT,
+            &destinationInfo);
+        if (!NT_SUCCESS(status)) {
+            FltReleaseFileNameInformation(nameInfo);
+            Data->IoStatus.Status = status;
+            Data->IoStatus.Information = 0;
+            FltSetCallbackDataDirty(Data);
+            return FLT_PREOP_COMPLETE;
+        }
+
+        if (!PathOverlayFindSourceOrStoreRuleForPath(&destinationInfo->Name, &targetRule, &targetSourcePath, &targetStorePath) ||
+            RtlCompareMemory(rule.RuleId, targetRule.RuleId, sizeof(rule.RuleId)) != sizeof(rule.RuleId)) {
+            FltReleaseFileNameInformation(destinationInfo);
+            FltReleaseFileNameInformation(nameInfo);
+            Data->IoStatus.Status = STATUS_NOT_SUPPORTED;
+            Data->IoStatus.Information = 0;
+            FltSetCallbackDataDirty(Data);
+            return FLT_PREOP_COMPLETE;
+        }
+
+        if (sourcePath) {
+            renameSourceRealPath = nameInfo->Name;
+        } else {
+            status = PathOverlayBuildRealPathFromShadow(&source, &store, &nameInfo->Name, &renameSourceRealPath);
+            if (!NT_SUCCESS(status)) {
+                FltReleaseFileNameInformation(destinationInfo);
+                FltReleaseFileNameInformation(nameInfo);
+                Data->IoStatus.Status = status;
+                Data->IoStatus.Information = 0;
+                FltSetCallbackDataDirty(Data);
+                return FLT_PREOP_COMPLETE;
+            }
+        }
+
+        if (targetSourcePath) {
+            renameTargetRealPath = destinationInfo->Name;
+        } else {
+            status = PathOverlayBuildRealPathFromShadow(&source, &store, &destinationInfo->Name, &renameTargetRealPath);
+            if (!NT_SUCCESS(status)) {
+                if (renameSourceRealPath.Buffer != nameInfo->Name.Buffer && renameSourceRealPath.Buffer != NULL) {
+                    ExFreePoolWithTag(renameSourceRealPath.Buffer, 'OPrP');
+                }
+                FltReleaseFileNameInformation(destinationInfo);
+                FltReleaseFileNameInformation(nameInfo);
+                Data->IoStatus.Status = status;
+                Data->IoStatus.Information = 0;
+                FltSetCallbackDataDirty(Data);
+                return FLT_PREOP_COMPLETE;
+            }
+        }
+
+        status = PathOverlaySendServiceRequest(
+            PathOverlayServiceCommandRecordRename,
+            rule.RuleId,
+            &renameSourceRealPath,
+            &renameTargetRealPath,
+            NULL);
+        if (renameSourceRealPath.Buffer != nameInfo->Name.Buffer && renameSourceRealPath.Buffer != NULL) {
+            ExFreePoolWithTag(renameSourceRealPath.Buffer, 'OPrP');
+        }
+        if (renameTargetRealPath.Buffer != destinationInfo->Name.Buffer && renameTargetRealPath.Buffer != NULL) {
+            ExFreePoolWithTag(renameTargetRealPath.Buffer, 'OPrP');
+        }
+        FltReleaseFileNameInformation(destinationInfo);
         FltReleaseFileNameInformation(nameInfo);
-        Data->IoStatus.Status = STATUS_NOT_SUPPORTED;
+        Data->IoStatus.Status = status;
         Data->IoStatus.Information = 0;
         FltSetCallbackDataDirty(Data);
         return FLT_PREOP_COMPLETE;
@@ -779,7 +1300,12 @@ PathOverlayPreSetInformation(
         }
     }
 
-    status = PathOverlaySendServiceRequest(PathOverlayServiceCommandRecordDelete, &deleteRealPath, NULL);
+    status = PathOverlaySendServiceRequest(
+        PathOverlayServiceCommandRecordDelete,
+        rule.RuleId,
+        &deleteRealPath,
+        NULL,
+        NULL);
     if (deleteRealPath.Buffer != nameInfo->Name.Buffer && deleteRealPath.Buffer != NULL) {
         ExFreePoolWithTag(deleteRealPath.Buffer, 'OPrP');
     }
@@ -814,7 +1340,7 @@ PathOverlayPreNetworkQueryOpen(
     UNREFERENCED_PARAMETER(FltObjects);
     *CompletionContext = NULL;
 
-    if (PathOverlayIsTombstonedOverlayPath(Data)) {
+    if (PathOverlayShouldDeferQueryOpen(Data)) {
         return FLT_PREOP_DISALLOW_FASTIO;
     }
 
@@ -831,7 +1357,7 @@ PathOverlayPreQueryOpen(
     UNREFERENCED_PARAMETER(FltObjects);
     *CompletionContext = NULL;
 
-    if (PathOverlayIsTombstonedOverlayPath(Data)) {
+    if (PathOverlayShouldDeferQueryOpen(Data)) {
         return FLT_PREOP_DISALLOW_FSFILTER_IO;
     }
 

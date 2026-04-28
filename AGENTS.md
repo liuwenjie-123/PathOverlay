@@ -9,7 +9,8 @@
 - `PathOverlay_Design.md`：原始设计说明。
 - `docs/Design_Review_and_Revisions.md`：设计修订和 MVP 边界。
 - `docs/MVP_Development_Plan.md`：MVP 开发计划。
-- `task.json`：任务列表、状态、交付物和验收标准。
+- `task.json`：任务列表、状态、交付物、验收标准和 notes 引用。
+- `docs/task-notes.md`：任务执行过程中的长 notes；`task.json` 只保留 `notes_ref`。
 
 ## Project Structure
 
@@ -32,9 +33,11 @@ Keep driver, service, CLI, and shared common logic separated. Put shared protoco
 3. 开始实现任务前，先查看 `task.json`。如果任务不存在，先补充任务；如果任务存在且未开始，先标记为 `in_progress`。
 4. 只有在该任务的 `test_criteria` 全部验证通过后，才能把状态改为 `done`。
 5. 每次任务完成并把状态更新为 `done` 后，应提交一次 git commit；提交时只包含本任务相关改动，不要混入无关或用户已有改动。
-6. 如果缺少 WDK、管理员权限、test-signing 环境或设计决策未确定导致无法继续，将任务标记为 `blocked`，并在 `notes` 记录阻塞原因。
+6. 如果缺少 WDK、管理员权限、test-signing 环境或设计决策未确定导致无法继续，将任务标记为 `blocked`，并在 `docs/task-notes.md` 记录阻塞原因，同时在任务中保留或新增 `notes_ref`。
 7. 不要回退用户已有改动。修改前先读取相关文件，按现有结构小范围变更。
-8. 构建、测试、安装和驱动操作命令不要在本文件重复维护，更新时应同步检查 `README.md` 和 `docs/Testing.md`。
+8. 不要把长篇执行记录直接写入 `task.json` 的 `notes` 字段；新增或更新长 notes 时写入 `docs/task-notes.md`，并让任务使用 `notes_ref` 指向对应章节。
+9. 构建、测试、安装和驱动操作命令不要在本文件重复维护，更新时应同步检查 `README.md` 和 `docs/Testing.md`。
+10. 为降低上下文消耗，读取任务状态或 notes 时优先定位目标片段，例如使用 `Select-String`、`rg` 或等效命令读取目标任务和对应 notes 章节；避免为小范围状态更新完整读取 `task.json` 或 `docs/task-notes.md`。
 
 ## Coding Style
 

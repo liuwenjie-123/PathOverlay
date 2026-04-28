@@ -1,6 +1,8 @@
 #include <windows.h>
 #include <fltuser.h>
 
+#include <algorithm>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -140,8 +142,35 @@ std::wstring TrimTrailingSlashes(std::wstring value) {
     return value;
 }
 
-std::wstring DosPathToNtPath(const std::wstring& dosPath) {
-    const std::wstring normalized = pathoverlay::NormalizePath(dosPath);
+std::wstring NormalizeAbsoluteDosPath(const std::wstring& dosPath, bool expandLongPath) {
+    if (dosPath.empty()) {
+        return {};
+    }
+
+    std::wstring slashNormalized = dosPath;
+    std::replace(slashNormalized.begin(), slashNormalized.end(), L'/', L'\\');
+
+    DWORD required = GetFullPathNameW(slashNormalized.c_str(), 0, nullptr, nullptr);
+    if (required == 0) {
+        return {};
+    }
+
+    std::vector<wchar_t> buffer(required);
+    DWORD length = GetFullPathNameW(slashNormalized.c_str(), required, buffer.data(), nullptr);
+    if (length == 0 || length >= required) {
+        return {};
+    }
+
+    std::wstring absolutePath = TrimTrailingSlashes(std::wstring(buffer.data(), length));
+    if (expandLongPath) {
+        absolutePath = pathoverlay::NormalizePath(absolutePath);
+    }
+
+    return absolutePath;
+}
+
+std::wstring DosPathToNtPathInternal(const std::wstring& dosPath, bool expandLongPath) {
+    const std::wstring normalized = NormalizeAbsoluteDosPath(dosPath, expandLongPath);
     if (normalized.size() < 3 || normalized[1] != L':' || normalized[2] != L'\\') {
         return {};
     }
@@ -154,6 +183,39 @@ std::wstring DosPathToNtPath(const std::wstring& dosPath) {
     }
 
     return TrimTrailingSlashes(std::wstring(deviceName)) + normalized.substr(2);
+}
+
+std::wstring DosPathToNtPath(const std::wstring& dosPath) {
+    return DosPathToNtPathInternal(dosPath, true);
+}
+
+std::wstring DosPathToNtPathPreservingAlias(const std::wstring& dosPath) {
+    return DosPathToNtPathInternal(dosPath, false);
+}
+
+std::wstring GetShortDosPathIfAvailable(const std::wstring& dosPath) {
+    const std::wstring normalized = pathoverlay::NormalizePath(dosPath);
+    if (normalized.empty()) {
+        return {};
+    }
+
+    DWORD required = GetShortPathNameW(normalized.c_str(), nullptr, 0);
+    if (required == 0) {
+        return {};
+    }
+
+    std::vector<wchar_t> buffer(required);
+    DWORD length = GetShortPathNameW(normalized.c_str(), buffer.data(), required);
+    if (length == 0 || length >= required) {
+        return {};
+    }
+
+    const std::wstring shortPath = TrimTrailingSlashes(std::wstring(buffer.data(), length));
+    if (_wcsicmp(shortPath.c_str(), normalized.c_str()) == 0) {
+        return {};
+    }
+
+    return shortPath;
 }
 
 std::wstring NtPathToDosPath(const std::wstring& ntPath) {
@@ -175,22 +237,62 @@ std::wstring NtPathToDosPath(const std::wstring& ntPath) {
     return {};
 }
 
-bool IsTombstoned(pathoverlay::MetadataStore& metadata, const std::wstring& realPath, std::wstring* error) {
+bool IsHiddenByRenameSource(const pathoverlay::ChangeRecord& record, const std::wstring& realPath);
+
+bool IsTombstoned(
+    pathoverlay::MetadataStore& metadata,
+    const std::wstring& ruleId,
+    const std::wstring& realPath,
+    std::wstring* error) {
     std::vector<pathoverlay::ChangeRecord> records;
-    if (!metadata.ListChanges(L"default", &records, error)) {
+    if (!metadata.ListChanges(ruleId, &records, error)) {
         return false;
     }
 
     const std::wstring normalizedReal = pathoverlay::NormalizePath(realPath);
     for (const auto& record : records) {
-        if (_wcsicmp(pathoverlay::NormalizePath(record.realPath).c_str(), normalizedReal.c_str()) == 0 &&
-            (record.state == pathoverlay::ChangeState::kTombstone ||
-             record.state == pathoverlay::ChangeState::kDeleted)) {
+        if ((_wcsicmp(pathoverlay::NormalizePath(record.realPath).c_str(), normalizedReal.c_str()) == 0 &&
+             (record.state == pathoverlay::ChangeState::kTombstone ||
+              record.state == pathoverlay::ChangeState::kDeleted)) ||
+            IsHiddenByRenameSource(record, realPath)) {
             return true;
         }
     }
 
     return false;
+}
+
+bool IsSamePathOrDescendant(const std::wstring& parent, const std::wstring& child) {
+    std::wstring normalizedParent = pathoverlay::NormalizePath(parent);
+    std::wstring normalizedChild = pathoverlay::NormalizePath(child);
+    for (wchar_t& ch : normalizedParent) {
+        ch = static_cast<wchar_t>(std::towlower(ch));
+    }
+    for (wchar_t& ch : normalizedChild) {
+        ch = static_cast<wchar_t>(std::towlower(ch));
+    }
+    if (normalizedParent == normalizedChild) {
+        return true;
+    }
+    if (!normalizedParent.empty() && normalizedParent.back() != L'\\') {
+        normalizedParent += L'\\';
+    }
+    return normalizedChild.rfind(normalizedParent, 0) == 0;
+}
+
+bool IsHiddenByRenameSource(const pathoverlay::ChangeRecord& record, const std::wstring& realPath) {
+    if (record.state != pathoverlay::ChangeState::kRenamed) {
+        return false;
+    }
+    if (_wcsicmp(pathoverlay::NormalizePath(record.realPath).c_str(), pathoverlay::NormalizePath(realPath).c_str()) == 0) {
+        return true;
+    }
+
+    std::error_code errorCode;
+    if (!std::filesystem::is_directory(record.shadowPath, errorCode) || errorCode) {
+        return false;
+    }
+    return IsSamePathOrDescendant(record.realPath, realPath);
 }
 
 PATHOVERLAY_SERVICE_RESPONSE ProcessDriverRequest(const PATHOVERLAY_SERVICE_REQUEST& request) {
@@ -208,6 +310,14 @@ PATHOVERLAY_SERVICE_RESPONSE ProcessDriverRequest(const PATHOVERLAY_SERVICE_REQU
         response.Status = kNtStatusUnsuccessful;
         return response;
     }
+    std::wstring targetPath;
+    if (request.Command == PathOverlayServiceCommandRecordRename) {
+        targetPath = NtPathToDosPath(request.TargetNtPath);
+        if (targetPath.empty()) {
+            response.Status = kNtStatusUnsuccessful;
+            return response;
+        }
+    }
 
     pathoverlay::MetadataStore metadata;
     std::wstring error;
@@ -217,21 +327,51 @@ PATHOVERLAY_SERVICE_RESPONSE ProcessDriverRequest(const PATHOVERLAY_SERVICE_REQU
         return response;
     }
 
+    const std::wstring ruleId = request.RuleId;
+    if (ruleId.empty()) {
+        response.Status = kNtStatusUnsuccessful;
+        return response;
+    }
+
     pathoverlay::OverlayRule rule;
-    if (!metadata.GetRule(L"default", &rule, &error) || !rule.enabled) {
+    if (!metadata.GetRule(ruleId, &rule, &error) || !rule.enabled) {
         response.Status = kNtStatusObjectNameNotFound;
         return response;
     }
 
     pathoverlay::OverlayOperations operations(metadata);
     if (request.Command == PathOverlayServiceCommandQueryPath) {
-        response.PathState = IsTombstoned(metadata, realPath, &error)
+        response.PathState = IsTombstoned(metadata, rule.id, realPath, &error)
             ? PathOverlayPathStateTombstone
             : PathOverlayPathStateNormal;
+        std::wstring renamedShadowPath;
+        pathoverlay::OperationResult renamedTargetResult{true, L""};
+        if (response.PathState == PathOverlayPathStateNormal) {
+            renamedTargetResult = operations.PrepareRenamedTargetPath(rule, realPath, &renamedShadowPath);
+            if (!renamedTargetResult.success) {
+                WriteLog(
+                    std::wstring(L"driver request: query renamed-target prepare failed rule=") + rule.id +
+                    L" path=" + realPath + L" error=" + renamedTargetResult.message);
+                response.Status = kNtStatusUnsuccessful;
+                return response;
+            }
+            if (!renamedShadowPath.empty()) {
+                const std::wstring renamedShadowNtPath = DosPathToNtPath(renamedShadowPath);
+                if (renamedShadowNtPath.empty() ||
+                    !CopyProtocolPath(renamedShadowNtPath, response.ShadowNtPath, PATHOVERLAY_MAX_PATH_CHARS)) {
+                    WriteLog(
+                        std::wstring(L"driver request: query renamed-target shadow path conversion failed rule=") +
+                        rule.id + L" path=" + realPath + L" shadow=" + renamedShadowPath);
+                    response.Status = kNtStatusUnsuccessful;
+                    return response;
+                }
+            }
+        }
         WriteLog(
-            std::wstring(L"driver request: query path=") + realPath +
+            std::wstring(L"driver request: query rule=") + rule.id + L" path=" + realPath +
             L" state=" +
-            (response.PathState == PathOverlayPathStateTombstone ? L"tombstone" : L"normal"));
+            (response.PathState == PathOverlayPathStateTombstone ? L"tombstone" : L"normal") +
+            (renamedShadowPath.empty() ? L"" : L" renamed-shadow=" + renamedShadowPath));
         return response;
     }
 
@@ -240,18 +380,24 @@ PATHOVERLAY_SERVICE_RESPONSE ProcessDriverRequest(const PATHOVERLAY_SERVICE_REQU
         std::wstring shadowPath;
         result = operations.PrepareCopyOnWrite(rule, realPath, &shadowPath);
         WriteLog(
-            std::wstring(L"driver request: copy-on-write path=") + realPath +
+            std::wstring(L"driver request: copy-on-write rule=") + rule.id + L" path=" + realPath +
             (result.success ? L" ok" : L" failed: " + result.message));
     } else if (request.Command == PathOverlayServiceCommandPrepareDirectoryView) {
         std::wstring shadowPath;
         result = operations.PrepareDirectoryView(rule, realPath, &shadowPath);
         WriteLog(
-            std::wstring(L"driver request: directory-view path=") + realPath +
+            std::wstring(L"driver request: directory-view rule=") + rule.id + L" path=" + realPath +
             (result.success ? L" ok" : L" failed: " + result.message));
     } else if (request.Command == PathOverlayServiceCommandRecordDelete) {
         result = operations.RecordDelete(rule, realPath);
         WriteLog(
-            std::wstring(L"driver request: record-delete path=") + realPath +
+            std::wstring(L"driver request: record-delete rule=") + rule.id + L" path=" + realPath +
+            (result.success ? L" ok" : L" failed: " + result.message));
+    } else if (request.Command == PathOverlayServiceCommandRecordRename) {
+        result = operations.RecordRename(rule, realPath, targetPath);
+        WriteLog(
+            std::wstring(L"driver request: record-rename rule=") + rule.id + L" source=" + realPath +
+            L" target=" + targetPath +
             (result.success ? L" ok" : L" failed: " + result.message));
     } else {
         response.Status = kNtStatusUnsuccessful;
@@ -331,40 +477,47 @@ std::wstring MakeCommitId() {
     return stream.str();
 }
 
-bool SameNormalizedPath(const std::wstring& left, const std::wstring& right) {
-    return _wcsicmp(pathoverlay::NormalizePath(left).c_str(), pathoverlay::NormalizePath(right).c_str()) == 0;
-}
+struct ParsedRuleAdd {
+    std::wstring source;
+    std::wstring store;
+};
 
-bool RulePathsChanged(const pathoverlay::OverlayRule& current, const pathoverlay::OverlayRule& next) {
-    return !SameNormalizedPath(current.source, next.source) ||
-           !SameNormalizedPath(current.store, next.store);
-}
-
-bool HasPendingChanges(pathoverlay::MetadataStore& metadata, const std::wstring& ruleId, std::wstring* error) {
-    std::vector<pathoverlay::ChangeRecord> records;
-    if (!metadata.ListChanges(ruleId, &records, error)) {
-        return true;
+ParsedRuleAdd ParseRuleAddPayload(const std::wstring& payload) {
+    constexpr wchar_t kStoreSwitch[] = L" --store ";
+    const size_t storeSwitch = payload.rfind(kStoreSwitch);
+    if (storeSwitch == std::wstring::npos) {
+        return ParsedRuleAdd{payload, L""};
     }
-    return !records.empty();
+
+    ParsedRuleAdd parsed;
+    parsed.source = payload.substr(0, storeSwitch);
+    parsed.store = payload.substr(storeSwitch + wcslen(kStoreSwitch));
+    return parsed;
 }
 
-bool RemoveShadowDriveForRule(const pathoverlay::OverlayRule& rule, std::wstring* error) {
-    const std::wstring driveRoot =
-        pathoverlay::NormalizePath(rule.store.empty() ? pathoverlay::DefaultStoreRoot() : rule.store) + L"\\drive";
-    std::error_code errorCode;
-    std::filesystem::remove_all(driveRoot, errorCode);
-    if (errorCode) {
-        if (error != nullptr) {
-            *error = L"failed to remove old shadow drive data";
-        }
+bool TryParseRuleIdCommand(
+    const std::wstring& request,
+    const std::wstring& command,
+    std::wstring* ruleId) {
+    const std::wstring prefix = command + L" --rule ";
+    if (request.rfind(prefix, 0) != 0) {
         return false;
     }
-    return true;
+
+    *ruleId = request.substr(prefix.size());
+    return !ruleId->empty();
+}
+
+std::wstring AppendDriverSyncWarning(std::wstring response, const std::wstring& syncError) {
+    if (syncError.empty()) {
+        return response;
+    }
+    return response + L" warning=driver sync failed: " + syncError;
 }
 
 bool PushDriverRule(const pathoverlay::OverlayRule& rule, std::wstring* error) {
     if (!rule.enabled) {
-        return ClearDriverRule(error);
+        return true;
     }
 
     const auto shadowSourcePath = pathoverlay::MapRealPathToShadowPath(rule, rule.source);
@@ -377,6 +530,14 @@ bool PushDriverRule(const pathoverlay::OverlayRule& rule, std::wstring* error) {
 
     const std::wstring sourceNtPath = DosPathToNtPath(rule.source);
     const std::wstring shadowSourceNtPath = DosPathToNtPath(*shadowSourcePath);
+    const std::wstring sourceAliasDosPath = GetShortDosPathIfAvailable(rule.source);
+    std::wstring sourceAliasNtPath;
+    if (!sourceAliasDosPath.empty()) {
+        sourceAliasNtPath = DosPathToNtPathPreservingAlias(sourceAliasDosPath);
+        if (_wcsicmp(sourceAliasNtPath.c_str(), sourceNtPath.c_str()) == 0) {
+            sourceAliasNtPath.clear();
+        }
+    }
     if (sourceNtPath.empty() || shadowSourceNtPath.empty()) {
         if (error != nullptr) {
             *error = L"failed to convert rule paths to NT device paths";
@@ -389,7 +550,10 @@ bool PushDriverRule(const pathoverlay::OverlayRule& rule, std::wstring* error) {
     message.Command = PathOverlayDriverCommandSetRule;
     message.Enabled = 1;
     message.ServiceProcessId = GetCurrentProcessId();
-    if (!CopyProtocolPath(sourceNtPath, message.SourceNtPath, PATHOVERLAY_MAX_PATH_CHARS) ||
+    if (!CopyProtocolPath(rule.id, message.RuleId, PATHOVERLAY_MAX_RULE_ID_CHARS) ||
+        !CopyProtocolPath(sourceNtPath, message.SourceNtPath, PATHOVERLAY_MAX_PATH_CHARS) ||
+        (!sourceAliasNtPath.empty() &&
+         !CopyProtocolPath(sourceAliasNtPath, message.SourceAliasNtPath, PATHOVERLAY_MAX_PATH_CHARS)) ||
         !CopyProtocolPath(shadowSourceNtPath, message.StoreNtPath, PATHOVERLAY_MAX_PATH_CHARS)) {
         if (error != nullptr) {
             *error = L"rule path is too long for driver protocol";
@@ -398,6 +562,52 @@ bool PushDriverRule(const pathoverlay::OverlayRule& rule, std::wstring* error) {
     }
 
     return SendDriverRuleMessage(message, error);
+}
+
+bool PushDriverRules(const std::vector<pathoverlay::OverlayRule>& rules, std::wstring* error) {
+    if (!ClearDriverRule(error)) {
+        return false;
+    }
+
+    std::vector<pathoverlay::OverlayRule> enabledRules;
+    enabledRules.reserve(rules.size());
+    for (const auto& rule : rules) {
+        if (rule.enabled) {
+            enabledRules.push_back(rule);
+        }
+    }
+
+    if (enabledRules.size() > PATHOVERLAY_MAX_DRIVER_RULES) {
+        if (error != nullptr) {
+            *error = L"too many enabled rules for driver protocol";
+        }
+        ClearDriverRule(nullptr);
+        return false;
+    }
+
+    std::vector<pathoverlay::OverlayRule> validatedRules;
+    validatedRules.reserve(enabledRules.size());
+    for (const auto& rule : enabledRules) {
+        const pathoverlay::RuleValidationResult validation =
+            pathoverlay::ValidateOverlayRuleSet(validatedRules, rule);
+        if (!validation.ok()) {
+            if (error != nullptr) {
+                *error = L"enabled rule set is invalid: " + validation.message;
+            }
+            ClearDriverRule(nullptr);
+            return false;
+        }
+        validatedRules.push_back(rule);
+    }
+
+    for (const auto& rule : enabledRules) {
+        if (!PushDriverRule(rule, error)) {
+            ClearDriverRule(nullptr);
+            return false;
+        }
+    }
+
+    return true;
 }
 
 DWORD WINAPI DriverMessageThread(LPVOID parameter) {
@@ -442,20 +652,20 @@ void SyncDriverRuleCache(pathoverlay::MetadataStore& metadata) {
     }
 
     std::wstring error;
-    pathoverlay::OverlayRule rule;
-    if (!metadata.GetRule(L"default", &rule, &error)) {
+    std::vector<pathoverlay::OverlayRule> rules;
+    if (!metadata.ListRules(&rules, &error)) {
         if (!ClearDriverRule(&error)) {
-            WriteLog(L"driver: failed to clear missing rule: " + error);
+            WriteLog(L"driver: failed to clear after rule query error: " + error);
         }
         return;
     }
 
-    if (!PushDriverRule(rule, &error)) {
-        WriteLog(L"driver: failed to sync rule: " + error);
+    if (!PushDriverRules(rules, &error)) {
+        WriteLog(L"driver: failed to sync rules: " + error);
         return;
     }
 
-    WriteLog(rule.enabled ? L"driver: default rule synchronized" : L"driver: default rule disabled");
+    WriteLog(L"driver: rules synchronized");
 }
 
 void SetServiceState(DWORD state, DWORD win32ExitCode = NO_ERROR, DWORD waitHint = 0) {
@@ -511,80 +721,63 @@ std::wstring ProcessRequest(const std::wstring& request) {
     }
 
     if (request.rfind(L"rule add ", 0) == 0) {
+        const ParsedRuleAdd parsed = ParseRuleAddPayload(request.substr(9));
         pathoverlay::OverlayRule rule;
-        rule.id = L"default";
-        rule.name = L"default";
+        rule.id = pathoverlay::GenerateRuleId();
+        rule.name = rule.id;
         rule.enabled = true;
-        rule.source = request.substr(9);
-        rule.store = pathoverlay::DefaultStoreRoot();
+        rule.source = parsed.source;
+        rule.store = parsed.store.empty() ? pathoverlay::DefaultStoreRootForRule(rule.id) : parsed.store;
 
-        const pathoverlay::RuleValidationResult validation = pathoverlay::ValidateOverlayRule(rule);
+        std::vector<pathoverlay::OverlayRule> existingRules;
+        if (!metadata.ListRules(&existingRules, &error)) {
+            return L"ERROR " + error;
+        }
+
+        const pathoverlay::RuleValidationResult validation = pathoverlay::ValidateOverlayRuleSet(existingRules, rule);
         if (!validation.ok()) {
             return L"ERROR " + validation.message;
         }
 
-        pathoverlay::OverlayRule currentRule;
-        const bool hasCurrentRule = metadata.GetRule(L"default", &currentRule, &error);
-        if (!hasCurrentRule && error != L"rule was not found") {
-            return L"ERROR " + error;
-        }
-        if (hasCurrentRule && RulePathsChanged(currentRule, rule)) {
-            std::wstring pendingError;
-            if (HasPendingChanges(metadata, currentRule.id, &pendingError)) {
-                if (!pendingError.empty()) {
-                    return L"ERROR " + pendingError;
-                }
-                return L"ERROR pending changes exist for current rule; run pathoverlay commit or pathoverlay discard before changing rule";
-            }
-
-            pathoverlay::OverlayRule pausedRule = currentRule;
-            pausedRule.enabled = false;
-            if (currentRule.enabled && !PushDriverRule(pausedRule, &error)) {
-                return L"ERROR failed to pause current driver rule: " + error;
-            }
-            if (!RemoveShadowDriveForRule(currentRule, &error)) {
-                if (currentRule.enabled) {
-                    PushDriverRule(currentRule, &error);
-                }
-                return L"ERROR " + error;
-            }
-        } else if (!hasCurrentRule) {
-            error.clear();
-        }
-
         if (!metadata.UpsertRule(rule, &error)) {
-            if (hasCurrentRule && currentRule.enabled) {
-                PushDriverRule(currentRule, &error);
-            }
             return L"ERROR " + error;
         }
-        if (!PushDriverRule(rule, &error)) {
-            if (hasCurrentRule) {
-                std::wstring restoreError;
-                metadata.UpsertRule(currentRule, &restoreError);
-                if (currentRule.enabled) {
-                    PushDriverRule(currentRule, &restoreError);
-                }
-            }
-            return L"ERROR rule saved but driver sync failed: " + error;
+        std::wstring syncError;
+        std::vector<pathoverlay::OverlayRule> rules;
+        if (!metadata.ListRules(&rules, &syncError) || !PushDriverRules(rules, &syncError)) {
+            WriteLog(L"driver: failed to sync added rule: " + syncError);
         }
-        return L"OK rule added: " + pathoverlay::NormalizePath(rule.source);
+        return AppendDriverSyncWarning(
+            L"OK rule added: " + rule.id +
+                L" source=" + pathoverlay::NormalizePath(rule.source) +
+                L" store=" + pathoverlay::NormalizePath(rule.store),
+            syncError);
     }
 
     if (request == L"rule enable" || request == L"rule disable") {
+        return L"ERROR rule id is required: use --rule <id>";
+    }
+
+    std::wstring ruleId;
+    if (TryParseRuleIdCommand(request, L"rule enable", &ruleId) ||
+        TryParseRuleIdCommand(request, L"rule disable", &ruleId)) {
         pathoverlay::OverlayRule rule;
-        if (!metadata.GetRule(L"default", &rule, &error)) {
-            return L"ERROR " + error;
+        if (!metadata.GetRule(ruleId, &rule, &error)) {
+            return L"ERROR rule not found: " + ruleId;
         }
 
-        rule.enabled = request == L"rule enable";
+        rule.enabled = request.rfind(L"rule enable ", 0) == 0;
         if (!metadata.SetRuleEnabled(rule.id, rule.enabled, &error)) {
             return L"ERROR " + error;
         }
-        if (!PushDriverRule(rule, &error)) {
-            return L"ERROR rule updated but driver sync failed: " + error;
+        std::wstring syncError;
+        std::vector<pathoverlay::OverlayRule> rules;
+        if (!metadata.ListRules(&rules, &syncError) || !PushDriverRules(rules, &syncError)) {
+            WriteLog(L"driver: failed to sync updated rule: " + syncError);
         }
-        return rule.enabled ? L"OK rule enabled" : L"OK rule disabled";
+        return AppendDriverSyncWarning(
+            rule.enabled ? L"OK rule enabled" : L"OK rule disabled",
+            syncError);
     }
 
     if (request == L"rule show") {
@@ -639,6 +832,9 @@ std::wstring ProcessRequest(const std::wstring& request) {
         output << L"OK";
         for (const auto& record : records) {
             output << L"\n" << pathoverlay::ChangeStateToString(record.state) << L" " << record.realPath;
+            if (!record.targetPath.empty()) {
+                output << L" -> " << record.targetPath;
+            }
         }
         return output.str();
     }
@@ -657,7 +853,8 @@ std::wstring ProcessRequest(const std::wstring& request) {
 
             pathoverlay::OverlayRule pausedRule = rule;
             pausedRule.enabled = false;
-            if (!PushDriverRule(pausedRule, &error)) {
+            std::vector<pathoverlay::OverlayRule> rules;
+            if (!metadata.ListRules(&rules, &error) || !PushDriverRules(rules, &error)) {
                 metadata.SetRuleEnabled(rule.id, true, &error);
                 return L"ERROR failed to pause driver rule: " + error;
             }
@@ -678,7 +875,8 @@ std::wstring ProcessRequest(const std::wstring& request) {
                 return L"ERROR " + request + L" completed but failed to restore rule: " + restoreError;
             }
             rule.enabled = true;
-            if (!PushDriverRule(rule, &restoreError)) {
+            std::vector<pathoverlay::OverlayRule> rules;
+            if (!metadata.ListRules(&rules, &restoreError) || !PushDriverRules(rules, &restoreError)) {
                 return L"ERROR " + request + L" completed but failed to restore driver rule: " + restoreError;
             }
             WriteLog(L"rule restored after " + request);
@@ -750,6 +948,7 @@ DWORD ServiceMainLoop() {
         return GetLastError();
     }
 
+    SetServiceState(SERVICE_RUNNING);
     WriteLog(L"service started");
     WaitForSingleObject(gStopEvent, INFINITE);
     DisconnectDriverPort();
@@ -791,14 +990,13 @@ void WINAPI ServiceMain(DWORD argc, LPWSTR* argv) {
         return;
     }
 
-    SetServiceState(SERVICE_START_PENDING, NO_ERROR, 3000);
+    SetServiceState(SERVICE_START_PENDING, NO_ERROR, 10000);
     gStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (gStopEvent == nullptr) {
         SetServiceState(SERVICE_STOPPED, GetLastError());
         return;
     }
 
-    SetServiceState(SERVICE_RUNNING);
     const DWORD result = ServiceMainLoop();
 
     CloseHandle(gStopEvent);
@@ -910,7 +1108,7 @@ int StartInstalledService() {
 
     SERVICE_STATUS_PROCESS status = {};
     DWORD bytesNeeded = 0;
-    for (DWORD attempt = 0; attempt < 50; ++attempt) {
+    for (DWORD attempt = 0; attempt < 100; ++attempt) {
         if (!QueryServiceStatusEx(
                 service,
                 SC_STATUS_PROCESS_INFO,
@@ -949,11 +1147,21 @@ int StartInstalledService() {
     return 1;
 }
 
-bool WaitForNamedPipeReady(DWORD timeoutMilliseconds) {
-    const DWORD start = GetTickCount();
-    while (GetTickCount() - start < timeoutMilliseconds) {
-        if (WaitNamedPipeW(kPipeName, 100)) {
+bool WaitForNamedPipeReady(DWORD timeoutMilliseconds, DWORD* lastError) {
+    const ULONGLONG start = GetTickCount64();
+    while (GetTickCount64() - start < timeoutMilliseconds) {
+        HANDLE pipe = CreateFileW(kPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (pipe != INVALID_HANDLE_VALUE) {
+            CloseHandle(pipe);
             return true;
+        }
+
+        const DWORD error = GetLastError();
+        if (lastError != nullptr) {
+            *lastError = error;
+        }
+        if (error == ERROR_PIPE_BUSY) {
+            WaitNamedPipeW(kPipeName, 100);
         }
         Sleep(100);
     }
@@ -967,8 +1175,10 @@ int StartInstalledServiceAndWaitForIpc() {
         return startResult;
     }
 
-    if (!WaitForNamedPipeReady(5000)) {
-        std::wcerr << L"Service started but IPC pipe was not ready. Check " << LogPath() << L"\n";
+    DWORD pipeError = ERROR_SUCCESS;
+    if (!WaitForNamedPipeReady(10000, &pipeError)) {
+        std::wcerr << L"Service started but IPC pipe was not ready. LastError=" << pipeError
+                   << L". Check " << LogPath() << L"\n";
         return 1;
     }
 

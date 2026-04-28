@@ -76,9 +76,9 @@ int SendRequest(const std::wstring& request) {
 void PrintUsage() {
     std::wcout
         << L"Usage:\n"
-        << L"  pathoverlay rule add <source>\n"
-        << L"  pathoverlay rule enable\n"
-        << L"  pathoverlay rule disable\n"
+        << L"  pathoverlay rule add <source> [--store <path>]\n"
+        << L"  pathoverlay rule enable --rule <id>\n"
+        << L"  pathoverlay rule disable --rule <id>\n"
         << L"  pathoverlay rule show\n"
         << L"  pathoverlay debug service-write <path> <content>\n"
         << L"  pathoverlay changes\n"
@@ -103,11 +103,11 @@ int wmain(int argc, wchar_t* argv[]) {
         if (argc == 3 && std::wstring(argv[2]) == L"show") {
             return SendRequest(L"rule show");
         }
-        if (argc == 3 && std::wstring(argv[2]) == L"enable") {
-            return SendRequest(L"rule enable");
+        if (argc == 5 && std::wstring(argv[2]) == L"enable" && std::wstring(argv[3]) == L"--rule") {
+            return SendRequest(L"rule enable --rule " + std::wstring(argv[4]));
         }
-        if (argc == 3 && std::wstring(argv[2]) == L"disable") {
-            return SendRequest(L"rule disable");
+        if (argc == 5 && std::wstring(argv[2]) == L"disable" && std::wstring(argv[3]) == L"--rule") {
+            return SendRequest(L"rule disable --rule " + std::wstring(argv[4]));
         }
         PrintUsage();
         return 1;

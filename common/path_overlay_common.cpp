@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <sstream>
 #include <vector>
 
 namespace pathoverlay {
@@ -85,6 +86,10 @@ RuleValidationResult Error(RuleValidationCode code, const wchar_t* message) {
     return RuleValidationResult{code, message};
 }
 
+RuleValidationResult Error(RuleValidationCode code, const std::wstring& message) {
+    return RuleValidationResult{code, message};
+}
+
 std::wstring JoinPath(const std::wstring& left, const std::wstring& right) {
     if (left.empty()) {
         return right;
@@ -123,6 +128,38 @@ std::wstring DefaultStoreRoot() {
         length = GetEnvironmentVariableW(L"ProgramData", buffer.data(), static_cast<DWORD>(buffer.size()));
     }
     return JoinPath(std::wstring(buffer.data(), length), L"PathOverlay\\Boxes\\Default");
+}
+
+std::wstring DefaultStoreRootForRule(const std::wstring& ruleId) {
+    std::wstring safeId = ruleId.empty() ? L"default" : ruleId;
+    for (wchar_t& ch : safeId) {
+        if (!(std::iswalnum(ch) || ch == L'-' || ch == L'_')) {
+            ch = L'_';
+        }
+    }
+
+    const std::wstring root = DefaultStoreRoot();
+    const size_t leaf = root.find_last_of(L"\\/");
+    const std::wstring boxesRoot = leaf == std::wstring::npos ? root : root.substr(0, leaf);
+    return JoinPath(boxesRoot, safeId);
+}
+
+std::wstring GenerateRuleId() {
+    SYSTEMTIME time = {};
+    GetSystemTime(&time);
+
+    std::wstringstream stream;
+    stream << L"rule-"
+           << time.wYear
+           << (time.wMonth < 10 ? L"0" : L"") << time.wMonth
+           << (time.wDay < 10 ? L"0" : L"") << time.wDay
+           << L"-"
+           << (time.wHour < 10 ? L"0" : L"") << time.wHour
+           << (time.wMinute < 10 ? L"0" : L"") << time.wMinute
+           << (time.wSecond < 10 ? L"0" : L"") << time.wSecond
+           << L"-" << GetCurrentProcessId()
+           << L"-" << GetTickCount64();
+    return stream.str();
 }
 
 std::wstring NormalizePath(const std::wstring& path) {
@@ -173,6 +210,48 @@ RuleValidationResult ValidateOverlayRule(const OverlayRule& rule) {
     }
     if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
         return Error(RuleValidationCode::kSourceIsReparsePoint, L"source reparse points are not supported in MVP");
+    }
+
+    return RuleValidationResult{};
+}
+
+RuleValidationResult ValidateOverlayRuleSet(
+    const std::vector<OverlayRule>& existingRules,
+    const OverlayRule& candidate) {
+    const RuleValidationResult candidateResult = ValidateOverlayRule(candidate);
+    if (!candidateResult.ok()) {
+        return candidateResult;
+    }
+
+    const std::wstring candidateSource = NormalizePath(candidate.source);
+    const std::wstring candidateStore = NormalizePath(candidate.store.empty() ? DefaultStoreRoot() : candidate.store);
+
+    for (const auto& existing : existingRules) {
+        if (existing.id == candidate.id) {
+            continue;
+        }
+
+        const RuleValidationResult existingResult = ValidateOverlayRule(existing);
+        if (!existingResult.ok()) {
+            return Error(
+                existingResult.code,
+                L"existing rule '" + existing.id + L"' is invalid: " + existingResult.message);
+        }
+
+        const std::wstring existingSource = NormalizePath(existing.source);
+        const std::wstring existingStore = NormalizePath(existing.store.empty() ? DefaultStoreRoot() : existing.store);
+
+        if (SameOrChildPath(existingSource, candidateSource) ||
+            SameOrChildPath(candidateSource, existingSource)) {
+            return Error(RuleValidationCode::kRuleOverlap, L"rule sources must not overlap");
+        }
+
+        if (SameOrChildPath(existingSource, candidateStore) ||
+            SameOrChildPath(candidateStore, existingSource) ||
+            SameOrChildPath(candidateSource, existingStore) ||
+            SameOrChildPath(existingStore, candidateSource)) {
+            return Error(RuleValidationCode::kSourceStoreOverlap, L"rule sources and stores must not contain each other");
+        }
     }
 
     return RuleValidationResult{};

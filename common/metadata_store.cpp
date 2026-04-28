@@ -171,6 +171,8 @@ std::wstring ChangeStateToString(ChangeState state) {
             return L"deleted";
         case ChangeState::kTombstone:
             return L"tombstone";
+        case ChangeState::kRenamed:
+            return L"renamed";
     }
     return L"created";
 }
@@ -190,6 +192,10 @@ bool TryParseChangeState(const std::wstring& value, ChangeState* state) {
     }
     if (value == L"tombstone") {
         *state = ChangeState::kTombstone;
+        return true;
+    }
+    if (value == L"renamed") {
+        *state = ChangeState::kRenamed;
         return true;
     }
     return false;
@@ -256,6 +262,7 @@ bool MetadataStore::Initialize(std::wstring* error) {
         "  rule_id TEXT NOT NULL,"
         "  real_path TEXT NOT NULL,"
         "  shadow_path TEXT NOT NULL,"
+        "  target_path TEXT NOT NULL DEFAULT '',"
         "  state TEXT NOT NULL,"
         "  original_exists INTEGER NOT NULL,"
         "  original_size INTEGER NOT NULL,"
@@ -275,7 +282,31 @@ bool MetadataStore::Initialize(std::wstring* error) {
         "  error TEXT NOT NULL"
         ");";
 
-    return Exec(static_cast<sqlite3*>(database_), kSchema, error);
+    if (!Exec(static_cast<sqlite3*>(database_), kSchema, error)) {
+        return false;
+    }
+
+    char* sqliteError = nullptr;
+    const int alterResult = g_sqlite.exec(
+        static_cast<sqlite3*>(database_),
+        "ALTER TABLE changes ADD COLUMN target_path TEXT NOT NULL DEFAULT '';",
+        nullptr,
+        nullptr,
+        &sqliteError);
+    if (alterResult != SQLITE_OK_VALUE) {
+        const std::wstring message = sqliteError != nullptr ? Utf8ToWide(sqliteError) : L"";
+        if (sqliteError != nullptr) {
+            g_sqlite.free(sqliteError);
+        }
+        if (message.find(L"duplicate column name") == std::wstring::npos) {
+            if (error != nullptr) {
+                *error = L"failed to migrate changes target_path: " + message;
+            }
+            return false;
+        }
+    }
+
+    return true;
 }
 
 bool MetadataStore::UpsertRule(const OverlayRule& rule, std::wstring* error) {
@@ -388,10 +419,10 @@ bool MetadataStore::ListRules(std::vector<OverlayRule>* rules, std::wstring* err
 
 bool MetadataStore::AddOrUpdateChange(const std::wstring& ruleId, const ChangeRecord& record, std::wstring* error) {
     static constexpr char kSql[] =
-        "INSERT INTO changes(rule_id, real_path, shadow_path, state, original_exists, original_size, original_last_write_time, current_size, last_write_time) "
-        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "INSERT INTO changes(rule_id, real_path, shadow_path, target_path, state, original_exists, original_size, original_last_write_time, current_size, last_write_time) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(rule_id, real_path) DO UPDATE SET "
-        "shadow_path = excluded.shadow_path, state = excluded.state, "
+        "shadow_path = excluded.shadow_path, target_path = excluded.target_path, state = excluded.state, "
         "current_size = excluded.current_size, last_write_time = excluded.last_write_time;";
 
     sqlite3_stmt* statement = nullptr;
@@ -404,12 +435,13 @@ bool MetadataStore::AddOrUpdateChange(const std::wstring& ruleId, const ChangeRe
     const bool bindOk = BindText(statement, 1, ruleId) &&
                         BindText(statement, 2, NormalizePath(record.realPath)) &&
                         BindText(statement, 3, NormalizePath(record.shadowPath)) &&
-                        BindText(statement, 4, ChangeStateToString(record.state)) &&
-                        g_sqlite.bind_int(statement, 5, record.originalExists ? 1 : 0) == SQLITE_OK_VALUE &&
-                        g_sqlite.bind_int64(statement, 6, static_cast<long long>(record.originalSize)) == SQLITE_OK_VALUE &&
-                        BindText(statement, 7, record.originalLastWriteTime) &&
-                        g_sqlite.bind_int64(statement, 8, static_cast<long long>(record.currentSize)) == SQLITE_OK_VALUE &&
-                        BindText(statement, 9, record.lastWriteTime);
+                        BindText(statement, 4, record.targetPath.empty() ? L"" : NormalizePath(record.targetPath)) &&
+                        BindText(statement, 5, ChangeStateToString(record.state)) &&
+                        g_sqlite.bind_int(statement, 6, record.originalExists ? 1 : 0) == SQLITE_OK_VALUE &&
+                        g_sqlite.bind_int64(statement, 7, static_cast<long long>(record.originalSize)) == SQLITE_OK_VALUE &&
+                        BindText(statement, 8, record.originalLastWriteTime) &&
+                        g_sqlite.bind_int64(statement, 9, static_cast<long long>(record.currentSize)) == SQLITE_OK_VALUE &&
+                        BindText(statement, 10, record.lastWriteTime);
     const bool ok = bindOk && g_sqlite.step(statement) == SQLITE_DONE_VALUE;
     if (!ok && error != nullptr) {
         *error = LastErrorMessage(db, L"failed to upsert change record");
@@ -420,7 +452,7 @@ bool MetadataStore::AddOrUpdateChange(const std::wstring& ruleId, const ChangeRe
 
 bool MetadataStore::ListChanges(const std::wstring& ruleId, std::vector<ChangeRecord>* records, std::wstring* error) {
     static constexpr char kSql[] =
-        "SELECT real_path, shadow_path, state, original_exists, original_size, original_last_write_time, current_size, last_write_time "
+        "SELECT real_path, shadow_path, target_path, state, original_exists, original_size, original_last_write_time, current_size, last_write_time "
         "FROM changes WHERE rule_id = ? ORDER BY real_path;";
 
     records->clear();
@@ -449,14 +481,34 @@ bool MetadataStore::ListChanges(const std::wstring& ruleId, std::vector<ChangeRe
         ChangeRecord record;
         record.realPath = ColumnText(statement, 0);
         record.shadowPath = ColumnText(statement, 1);
-        TryParseChangeState(ColumnText(statement, 2), &record.state);
-        record.originalExists = g_sqlite.column_int(statement, 3) != 0;
-        record.originalSize = static_cast<unsigned long long>(g_sqlite.column_int64(statement, 4));
-        record.originalLastWriteTime = ColumnText(statement, 5);
-        record.currentSize = static_cast<unsigned long long>(g_sqlite.column_int64(statement, 6));
-        record.lastWriteTime = ColumnText(statement, 7);
+        record.targetPath = ColumnText(statement, 2);
+        TryParseChangeState(ColumnText(statement, 3), &record.state);
+        record.originalExists = g_sqlite.column_int(statement, 4) != 0;
+        record.originalSize = static_cast<unsigned long long>(g_sqlite.column_int64(statement, 5));
+        record.originalLastWriteTime = ColumnText(statement, 6);
+        record.currentSize = static_cast<unsigned long long>(g_sqlite.column_int64(statement, 7));
+        record.lastWriteTime = ColumnText(statement, 8);
         records->push_back(record);
     }
+}
+
+bool MetadataStore::DeleteChange(const std::wstring& ruleId, const std::wstring& realPath, std::wstring* error) {
+    static constexpr char kSql[] = "DELETE FROM changes WHERE rule_id = ? AND real_path = ?;";
+    sqlite3_stmt* statement = nullptr;
+    sqlite3* db = static_cast<sqlite3*>(database_);
+    if (g_sqlite.prepare_v2(db, kSql, -1, &statement, nullptr) != SQLITE_OK_VALUE) {
+        *error = LastErrorMessage(db, L"failed to prepare change delete");
+        return false;
+    }
+
+    const bool bindOk = BindText(statement, 1, ruleId) &&
+                        BindText(statement, 2, NormalizePath(realPath));
+    const bool ok = bindOk && g_sqlite.step(statement) == SQLITE_DONE_VALUE;
+    if (!ok && error != nullptr) {
+        *error = LastErrorMessage(db, L"failed to delete change record");
+    }
+    g_sqlite.finalize(statement);
+    return ok;
 }
 
 bool MetadataStore::DeleteChangesForRule(const std::wstring& ruleId, std::wstring* error) {

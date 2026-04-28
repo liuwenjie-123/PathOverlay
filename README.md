@@ -2,11 +2,11 @@
 
 PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driver + 用户态服务 + CLI` 实现指定本地目录的 copy-on-write 重定向。它的目标是在 commit 前保护真实目录：写入进入隔离目录，删除记录为 tombstone，用户可以选择提交或丢弃变更。
 
-当前仓库是 MVP 实现，不是生产级沙箱。设计背景见 `PathOverlay_Design.md`，MVP 边界以 `docs/Design_Review_and_Revisions.md`、`docs/MVP_Development_Plan.md` 和 `task.json` 为准。
+当前仓库是从 MVP 向 vNext 演进中的实现，不是生产级沙箱。设计背景见 `PathOverlay_Design.md`，MVP 边界以 `docs/Design_Review_and_Revisions.md`、`docs/MVP_Development_Plan.md` 和 `task.json` 为准。
 
 ## 当前能力
 
-- 支持一个本地目录规则。
+- 支持多条互不重叠的本地目录规则，每条规则有独立 rule id 和 store。
 - 读操作优先读取已有 shadow 文件，否则读取真实文件。
 - 写入真实文件前准备 shadow copy，commit 前不直接修改真实文件。
 - 新建文件记录为 created。
@@ -18,7 +18,7 @@ PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driv
 
 ## 已知限制
 
-- MVP 只支持一个本地目录规则，不支持多个规则。
+- 多规则 source 不能相同或互相包含，任一 source 和任一 store 不能互相嵌套。
 - 不支持整盘覆盖、盘符根目录、UNC 路径、网络路径和 reparse point 作为 source。
 - source 和 store 不能互相嵌套。
 - rename/move 在 MVP 中返回不支持。
@@ -185,21 +185,25 @@ CLI 示例：
 ```powershell
 .\pathoverlay.exe driver status
 .\pathoverlay.exe rule add C:\Temp\PathOverlaySource
+.\pathoverlay.exe rule add C:\Temp\AnotherSource --store D:\PathOverlayStore\AnotherSource
 .\pathoverlay.exe rule show
 .\pathoverlay.exe changes
 .\pathoverlay.exe commit
 .\pathoverlay.exe discard
-.\pathoverlay.exe rule disable
-.\pathoverlay.exe rule enable
+.\pathoverlay.exe rule disable --rule <id>
+.\pathoverlay.exe rule enable --rule <id>
 ```
 
 ## 覆盖层日常使用
 
-设置一个覆盖规则：
+设置覆盖规则：
 
 ```powershell
 .\pathoverlay.exe rule add C:\Temp\PathOverlaySource
+.\pathoverlay.exe rule add C:\Temp\AnotherSource --store D:\PathOverlayStore\AnotherSource
 ```
+
+每次 `rule add` 成功都会返回自动生成的 rule id。未指定 `--store` 时，服务会为该规则生成独立 store；指定 `--store` 时，该路径会持久化并参与重叠校验。
 
 查看当前规则和隔离目录：
 
@@ -207,10 +211,18 @@ CLI 示例：
 .\pathoverlay.exe rule show
 ```
 
-输出中会包含 `source` 和 `store`。例如：
+输出中会列出所有规则的 `id`、`enabled`、`source` 和 `store`。例如：
 
 ```text
-source=C:\Temp\PathOverlaySource store=C:\ProgramData\PathOverlay\stores\PathOverlayRule-...
+OK
+rule-20260427-120000-1234-5678 enabled=true source=C:\Temp\PathOverlaySource store=C:\ProgramData\PathOverlay\Boxes\rule-20260427-120000-1234-5678
+```
+
+按 rule id 启用或禁用规则：
+
+```powershell
+.\pathoverlay.exe rule disable --rule rule-20260427-120000-1234-5678
+.\pathoverlay.exe rule enable --rule rule-20260427-120000-1234-5678
 ```
 
 规则启用后，写入 `source` 内的文件不会在 commit 前直接修改真实文件。新建或修改：
@@ -222,7 +234,7 @@ Set-Content C:\Temp\PathOverlaySource\a.txt "hello"
 对应内容会写入 `store` 下的 shadow 路径，形如：
 
 ```text
-C:\ProgramData\PathOverlay\stores\PathOverlayRule-...\drive\C\Temp\PathOverlaySource\a.txt
+C:\ProgramData\PathOverlay\Boxes\rule-...\drive\C\Temp\PathOverlaySource\a.txt
 ```
 
 删除 `source` 内文件时，commit 前不会删除真实文件，而是记录 tombstone：
@@ -294,7 +306,8 @@ sc.exe delete PathOverlayFlt
 - `PathOverlaySvc is unavailable`：确认服务已安装并启动，或查看 `%ProgramData%\PathOverlay\PathOverlaySvc.log`。
 - `driver status` 失败：确认 `PathOverlayFlt` 已加载，驱动签名可信，test-signing 已启用并重启。
 - 驱动无法加载：确认管理员权限、WDK 构建产物、测试证书导入和 `bcdedit /set testsigning on`。
-- CLI 切换规则失败并提示 pending changes：先执行 `pathoverlay commit` 或 `pathoverlay discard`。
+- `rule add` 失败并提示规则重叠：检查新 source 是否与已有 source 互相包含，或 source/store 是否互相嵌套。
+- `rule enable` 或 `rule disable` 失败：确认命令包含 `--rule <id>`，并用 `pathoverlay rule show` 查看有效 id。
 - 测试数据残留：运行 `.\scripts\cleanup-test-data.ps1 -IncludeDriverAndService`。
 
 ## 仓库结构

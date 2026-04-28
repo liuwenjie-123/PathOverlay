@@ -12,11 +12,13 @@ enum class ChangeState {
     kModified,
     kDeleted,
     kTombstone,
+    kRenamed,
 };
 
 struct ChangeRecord {
     std::wstring realPath;
     std::wstring shadowPath;
+    std::wstring targetPath;
     ChangeState state = ChangeState::kCreated;
     bool originalExists = false;
     unsigned long long originalSize = 0;
@@ -53,6 +55,7 @@ public:
     bool ListRules(std::vector<OverlayRule>* rules, std::wstring* error);
     bool AddOrUpdateChange(const std::wstring& ruleId, const ChangeRecord& record, std::wstring* error);
     bool ListChanges(const std::wstring& ruleId, std::vector<ChangeRecord>* records, std::wstring* error);
+    bool DeleteChange(const std::wstring& ruleId, const std::wstring& realPath, std::wstring* error);
     bool DeleteChangesForRule(const std::wstring& ruleId, std::wstring* error);
     bool AddCommitRecord(const CommitRecord& record, std::wstring* error);
     bool GetCommitRecord(const std::wstring& commitId, CommitRecord* record, std::wstring* error);
