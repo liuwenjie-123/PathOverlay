@@ -128,6 +128,15 @@ function Get-RuleBySource([string]$RuleShowOutput, [string]$Source) {
     throw "rule show output did not include source '$canonicalSource'. Output=$RuleShowOutput"
 }
 
+function Test-ChangesContainsRule([string]$ChangesOutput, [string]$RuleId, [string]$Source, [string]$Store, [string]$State, [string]$Path) {
+    $canonicalSource = [regex]::Escape((ConvertTo-CanonicalPath $Source))
+    $canonicalStore = [regex]::Escape((ConvertTo-CanonicalPath $Store))
+    $canonicalPath = [regex]::Escape((ConvertTo-CanonicalPath $Path))
+    $rulePattern = "rule=$([regex]::Escape($RuleId))\s+enabled=(true|false)\s+source=$canonicalSource\s+store=$canonicalStore"
+    $changePattern = "\s+$([regex]::Escape($State))\s+$canonicalPath"
+    return ($ChangesOutput -match $rulePattern) -and ($ChangesOutput -match $changePattern)
+}
+
 function Write-ServiceDiagnostics {
     Write-Step "PathOverlaySvc diagnostics"
 
@@ -610,6 +619,147 @@ function Test-DirectoryRenameDriverBehavior {
     }
 }
 
+function Test-DirectoryDeleteAndEnumerationDriverBehavior {
+    Write-Step "Testing T023/T028 directory tombstone and enumeration behavior"
+    $testRoot = Join-Path $env:TEMP ("PathOverlayDirDelete-" + [guid]::NewGuid().ToString("N"))
+    $source = Join-Path $testRoot "source"
+    New-Item -ItemType Directory -Path $source -Force | Out-Null
+
+    try {
+        $deleteDir = Join-Path $source "delete-dir"
+        $keepDir = Join-Path $source "keep-dir"
+        New-Item -ItemType Directory -Path $deleteDir, $keepDir -Force | Out-Null
+        Set-Content -Path (Join-Path $deleteDir "child.txt") -Value "delete-dir-child" -Encoding ASCII
+        Set-Content -Path (Join-Path $keepDir "keep.txt") -Value "keep-dir-child" -Encoding ASCII
+
+        Invoke-Cli @("rule", "add", $source) "Failed to add directory tombstone rule." | Out-Null
+        $ruleShow = Invoke-Cli @("rule", "show") "Failed to show directory tombstone rule state."
+        $rule = Get-RuleBySource $ruleShow $source
+
+        Remove-Item -LiteralPath $deleteDir -Recurse -Force
+        Write-Check "tombstoned directory is hidden" (-not (Test-Path -LiteralPath $deleteDir)) "rule=$($rule.Id) source=$source store=$($rule.Store) path=$deleteDir"
+        Write-Check "tombstoned directory child is hidden" (-not (Test-Path -LiteralPath (Join-Path $deleteDir "child.txt"))) "rule=$($rule.Id) path=$(Join-Path $deleteDir "child.txt")"
+        $names = Get-ChildItem -LiteralPath $source | Select-Object -ExpandProperty Name
+        Write-Check "directory enumeration hides tombstoned directory" ($names -notcontains "delete-dir") "rule=$($rule.Id) names=$($names -join ',')"
+        Write-Check "directory enumeration keeps unaffected directory" ($names -contains "keep-dir") "rule=$($rule.Id) names=$($names -join ',')"
+
+        $changes = Invoke-Cli @("changes") "Failed to query directory tombstone changes."
+        Write-Check "changes include directory tombstone rule context" (Test-ChangesContainsRule $changes $rule.Id $source $rule.Store "tombstone" $deleteDir) $changes
+
+        Invoke-Cli @("rule", "disable", "--rule", $rule.Id) "Failed to disable directory tombstone rule." | Out-Null
+        Write-Check "directory tombstone did not delete real directory before commit" (Test-Path -LiteralPath $deleteDir) "path=$deleteDir"
+    } finally {
+        try {
+            $ruleShow = Invoke-Cli @("rule", "show") "Failed to show rules during directory tombstone cleanup."
+            foreach ($rule in (Parse-Rules $ruleShow)) {
+                if ($rule.Enabled) {
+                    Invoke-Cli @("rule", "disable", "--rule", $rule.Id) "Failed to disable rule during directory tombstone cleanup." | Out-Null
+                }
+            }
+        } catch {
+            Write-Host "Ignoring directory tombstone cleanup rule disable failure: $($_.Exception.Message)"
+        }
+        Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-CommitDiscardByRuleDriverBehavior {
+    Write-Step "Testing T026/T028 commit and discard by rule id"
+    $testRoot = Join-Path $env:TEMP ("PathOverlayRuleOps-" + [guid]::NewGuid().ToString("N"))
+    $source1 = Join-Path $testRoot "source-commit"
+    $source2 = Join-Path $testRoot "source-discard"
+    New-Item -ItemType Directory -Path $source1, $source2 -Force | Out-Null
+
+    try {
+        $file1 = Join-Path $source1 "commit.txt"
+        $file2 = Join-Path $source2 "discard.txt"
+        Set-Content -Path $file1 -Value "commit-base" -Encoding ASCII
+        Set-Content -Path $file2 -Value "discard-base" -Encoding ASCII
+
+        Invoke-Cli @("rule", "add", $source1) "Failed to add commit rule." | Out-Null
+        Invoke-Cli @("rule", "add", $source2) "Failed to add discard rule." | Out-Null
+        $ruleShow = Invoke-Cli @("rule", "show") "Failed to show rule operation state."
+        $commitRule = Get-RuleBySource $ruleShow $source1
+        $discardRule = Get-RuleBySource $ruleShow $source2
+
+        Set-Content -Path $file1 -Value "commit-overlay" -Encoding ASCII
+        Set-Content -Path $file2 -Value "discard-overlay" -Encoding ASCII
+        $changesBefore = Invoke-Cli @("changes") "Failed to query changes before rule operations."
+        Write-Check "changes include commit rule before commit" (Test-ChangesContainsRule $changesBefore $commitRule.Id $source1 $commitRule.Store "modified" $file1) $changesBefore
+        Write-Check "changes include discard rule before discard" (Test-ChangesContainsRule $changesBefore $discardRule.Id $source2 $discardRule.Store "modified" $file2) $changesBefore
+
+        $commitOutput = Invoke-Cli @("commit", "--rule", $commitRule.Id) "Commit by rule id failed."
+        Write-Check "commit output includes rule context" ($commitOutput -match "rule=$([regex]::Escape($commitRule.Id))" -and $commitOutput -match "source=" -and $commitOutput -match "store=") $commitOutput
+        Write-Check "selected rule commit writes real file" ((Get-Content -LiteralPath $file1 -Raw) -match "commit-overlay") "rule=$($commitRule.Id) path=$file1"
+        Invoke-Cli @("rule", "disable", "--rule", $discardRule.Id) "Failed to disable discard rule for real-file verification." | Out-Null
+        Write-Check "commit does not modify other rule real file" ((Get-Content -LiteralPath $file2 -Raw) -match "discard-base") "rule=$($discardRule.Id) path=$file2"
+        Invoke-Cli @("rule", "enable", "--rule", $discardRule.Id) "Failed to re-enable discard rule." | Out-Null
+
+        $changesAfterCommit = Invoke-Cli @("changes") "Failed to query changes after commit."
+        Write-Check "commit clears selected rule changes only" (-not (Test-ChangesContainsRule $changesAfterCommit $commitRule.Id $source1 $commitRule.Store "modified" $file1)) $changesAfterCommit
+        Write-Check "commit preserves other rule changes" (Test-ChangesContainsRule $changesAfterCommit $discardRule.Id $source2 $discardRule.Store "modified" $file2) $changesAfterCommit
+
+        $discardOutput = Invoke-Cli @("discard", "--rule", $discardRule.Id) "Discard by rule id failed."
+        Write-Check "discard output includes rule context" ($discardOutput -match "rule=$([regex]::Escape($discardRule.Id))" -and $discardOutput -match "source=" -and $discardOutput -match "store=") $discardOutput
+        Write-Check "selected rule discard keeps real file" ((Get-Content -LiteralPath $file2 -Raw) -match "discard-base") "rule=$($discardRule.Id) path=$file2"
+        $changesAfterDiscard = Invoke-Cli @("changes") "Failed to query changes after discard."
+        Write-Check "discard clears selected rule changes" (-not (Test-ChangesContainsRule $changesAfterDiscard $discardRule.Id $source2 $discardRule.Store "modified" $file2)) $changesAfterDiscard
+    } finally {
+        try {
+            $ruleShow = Invoke-Cli @("rule", "show") "Failed to show rules during rule operation cleanup."
+            foreach ($rule in (Parse-Rules $ruleShow)) {
+                if ($rule.Enabled) {
+                    Invoke-Cli @("rule", "disable", "--rule", $rule.Id) "Failed to disable rule during rule operation cleanup." | Out-Null
+                }
+            }
+        } catch {
+            Write-Host "Ignoring rule operation cleanup rule disable failure: $($_.Exception.Message)"
+        }
+        Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-OccupiedCommitDriverBehavior {
+    Write-Step "Testing T027/T028 occupied commit detection"
+    $testRoot = Join-Path $env:TEMP ("PathOverlayOccupied-" + [guid]::NewGuid().ToString("N"))
+    $source = Join-Path $testRoot "source"
+    New-Item -ItemType Directory -Path $source -Force | Out-Null
+    $handle = $null
+
+    try {
+        $file = Join-Path $source "occupied.txt"
+        Set-Content -Path $file -Value "occupied-base" -Encoding ASCII
+        Invoke-Cli @("rule", "add", $source) "Failed to add occupied commit rule." | Out-Null
+        $ruleShow = Invoke-Cli @("rule", "show") "Failed to show occupied rule state."
+        $rule = Get-RuleBySource $ruleShow $source
+
+        Set-Content -Path $file -Value "occupied-overlay" -Encoding ASCII
+        Invoke-Cli @("rule", "disable", "--rule", $rule.Id) "Failed to disable occupied rule before opening real file." | Out-Null
+        $handle = [System.IO.File]::Open($file, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        Invoke-Cli @("rule", "enable", "--rule", $rule.Id) "Failed to re-enable occupied rule before commit." | Out-Null
+
+        $commitFailure = Invoke-CliExpectFailure @("commit", "--rule", $rule.Id) "Occupied commit should fail without --confirm-close."
+        Write-Check "occupied commit failure includes rule context" ($commitFailure -match "occupied files detected" -and $commitFailure -match "rule=$([regex]::Escape($rule.Id))" -and $commitFailure -match "pid=") $commitFailure
+        $changes = Invoke-Cli @("changes") "Failed to query changes after occupied commit failure."
+        Write-Check "occupied commit failure preserves metadata" (Test-ChangesContainsRule $changes $rule.Id $source $rule.Store "modified" $file) $changes
+    } finally {
+        if ($null -ne $handle) {
+            $handle.Dispose()
+        }
+        try {
+            $ruleShow = Invoke-Cli @("rule", "show") "Failed to show rules during occupied cleanup."
+            foreach ($rule in (Parse-Rules $ruleShow)) {
+                if ($rule.Enabled) {
+                    Invoke-Cli @("rule", "disable", "--rule", $rule.Id) "Failed to disable rule during occupied cleanup." | Out-Null
+                }
+            }
+        } catch {
+            Write-Host "Ignoring occupied cleanup rule disable failure: $($_.Exception.Message)"
+        }
+        Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Cleanup {
     if ($SkipCleanup) {
         Write-Host "Skipping cleanup by request."
@@ -639,10 +789,16 @@ try {
     Install-And-TestService
     Test-NoRulePassthrough
     Test-MultiRuleDriverBehavior
+    Restart-ServiceWithCleanData "T023 directory tombstone test"
+    Test-DirectoryDeleteAndEnumerationDriverBehavior
     Restart-ServiceWithCleanData "T024 file rename test"
     Test-FileRenameDriverBehavior
     Restart-ServiceWithCleanData "T025 directory rename test"
     Test-DirectoryRenameDriverBehavior
+    Restart-ServiceWithCleanData "T026 commit/discard by rule test"
+    Test-CommitDiscardByRuleDriverBehavior
+    Restart-ServiceWithCleanData "T027 occupied commit test"
+    Test-OccupiedCommitDriverBehavior
 
     Write-Step "Result"
     Write-Host "PathOverlay test package passed all automated checks." -ForegroundColor Green

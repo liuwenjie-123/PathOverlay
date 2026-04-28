@@ -635,7 +635,7 @@
     {
       "id": "T028",
       "title": "补充 vNext 自动化与驱动 E2E",
-      "status": "pending",
+      "status": "done",
       "description": "补充覆盖多规则、目录语义、rename/move、按规则 commit/discard 和占用检测的用户态、服务集成和驱动 E2E 测试。",
       "deliverables": [
         "多规则用户态测试",
@@ -653,7 +653,8 @@
       ],
       "depends_on": [
         "T027"
-      ]
+      ],
+      "notes_ref": "docs/task-notes.md#T028"
     },
     {
       "id": "T029",

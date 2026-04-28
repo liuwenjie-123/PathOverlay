@@ -88,11 +88,14 @@ port, installs and starts `PathOverlaySvc`, verifies CLI IPC, and exercises:
 - copy-on-write modification and shadow read priority;
 - new file creation in the overlay view;
 - deletion tombstones and tombstone-aware open/query behavior;
-- directory enumeration merging without duplicate entries;
+- directory tombstones, tombstone-aware enumeration, and directory view merging
+  without duplicate entries;
 - discard without modifying real files;
 - commit writeback, deletion, backup creation, rule restore, shadow cleanup, and
   metadata cleanup;
-- MVP rename rejection.
+- file and directory rename/move isolation;
+- commit/discard by rule id;
+- occupied-file detection before commit/discard.
 
 The script writes a transcript under `test-machine-package\logs\` and performs
 service and driver cleanup unless `-SkipCleanup` is used.

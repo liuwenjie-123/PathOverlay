@@ -1141,21 +1141,38 @@ std::wstring ProcessRequest(const std::wstring& request) {
     }
 
     if (request == L"changes") {
-        std::vector<pathoverlay::ChangeRecord> records;
-        if (!metadata.ListChanges(L"default", &records, &error)) {
+        std::vector<pathoverlay::OverlayRule> rules;
+        if (!metadata.ListRules(&rules, &error)) {
             return L"ERROR " + error;
-        }
-        if (records.empty()) {
-            return L"OK no changes";
         }
 
         std::wstringstream output;
         output << L"OK";
-        for (const auto& record : records) {
-            output << L"\n" << pathoverlay::ChangeStateToString(record.state) << L" " << record.realPath;
-            if (!record.targetPath.empty()) {
-                output << L" -> " << record.targetPath;
+        bool anyChanges = false;
+        for (const auto& rule : rules) {
+            std::vector<pathoverlay::ChangeRecord> records;
+            if (!metadata.ListChanges(rule.id, &records, &error)) {
+                return L"ERROR " + error;
             }
+            if (records.empty()) {
+                continue;
+            }
+
+            anyChanges = true;
+            output << L"\nrule=" << rule.id
+                   << L" enabled=" << (rule.enabled ? L"true" : L"false")
+                   << L" source=" << rule.source
+                   << L" store=" << rule.store;
+            for (const auto& record : records) {
+                output << L"\n  " << pathoverlay::ChangeStateToString(record.state) << L" " << record.realPath;
+                if (!record.targetPath.empty()) {
+                    output << L" -> " << record.targetPath;
+                }
+            }
+        }
+
+        if (!anyChanges) {
+            return L"OK no changes";
         }
         return output.str();
     }
@@ -1180,7 +1197,9 @@ std::wstring ProcessRequest(const std::wstring& request) {
             return L"ERROR " + error;
         }
         if (!EnsureNoOccupyingProcesses(records, isCommit, operation.confirmClose, &error)) {
-            return L"ERROR " + error;
+            const std::wstring operationName = isCommit ? L"commit" : L"discard";
+            return L"ERROR " + operationName + L" failed rule=" + rule.id +
+                L" source=" + rule.source + L" store=" + rule.store + L" error=" + error;
         }
 
         const bool restoreEnabled = rule.enabled;
@@ -1238,9 +1257,11 @@ std::wstring ProcessRequest(const std::wstring& request) {
         }
 
         const std::wstring operationName = isCommit ? L"commit" : L"discard";
+        const std::wstring ruleContext =
+            L" rule=" + rule.id + L" source=" + rule.source + L" store=" + rule.store;
         return result.success
-            ? AppendDriverSyncWarning(L"OK " + operationName + L" completed", syncWarning)
-            : L"ERROR " + result.message;
+            ? AppendDriverSyncWarning(L"OK " + operationName + L" completed" + ruleContext, syncWarning)
+            : L"ERROR " + operationName + L" failed" + ruleContext + L" error=" + result.message;
     }
 
     return L"ERROR unknown command";

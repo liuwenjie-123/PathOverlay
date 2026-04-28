@@ -165,3 +165,10 @@
 ## T027 - 实现占用检测与确认关闭流程
 
 2026-04-28：已在服务端 commit/discard 执行前使用 Windows Restart Manager 查询本规则 pending changes 涉及的现有文件占用进程。默认行为改为发现占用即返回 `ERROR occupied files detected`，输出 pid、进程名、应用类型和 protected 标记，并保留 change 元数据与 shadow 数据；CLI 新增 `--confirm-close`，确认后服务只会关闭非关键用户进程，遇到 system/critical/service/PathOverlaySvc 等受保护进程会整体拒绝关闭，不会先部分终止。关闭后会复查占用，确认清空后再暂停规则、执行 commit/discard 并恢复规则；SkipDriver 环境下 driver sync 缺失会降级为 warning，避免阻塞用户态服务集成验证。新增 `debug prepare-cow --rule <id> <path>` 用于服务集成测试制造 pending change。README 和安装脚本示例已更新为 `commit|discard --rule <id>` 与 `--confirm-close` 语义。验证通过：`scripts/build.ps1`、`scripts/test.ps1`、`x64/Debug/install-start.ps1 -SkipDriver -ResetData`，以及 SkipDriver 服务集成脚本覆盖 commit/discard 默认占用失败、占用进程列表输出、失败保留 shadow、`--confirm-close` 关闭持有文件句柄的用户进程后继续完成操作、discard 不修改真实文件；已卸载测试服务。
+## T028 - 补充 vNext 自动化与驱动 E2E
+
+2026-04-28：任务开始，目标是补齐多规则、目录语义、rename/move、按规则 commit/discard 和占用检测的用户态、服务集成与测试机 E2E 覆盖，并增强失败日志中的 rule id、source、store 和关键操作结果。
+
+2026-04-28：已修正 `pathoverlay changes`，从旧的 `default` 单规则查询改为按所有规则输出 pending changes，并在每组变更前输出 rule id、enabled、source 和 store；commit/discard 成功、操作失败和占用预检失败响应均补充 rule/source/store 上下文。测试机 E2E 脚本新增目录 tombstone 与枚举、按 rule id commit/discard 隔离、占用 commit 默认失败并保留 metadata 的场景，失败断言详情包含 rule id、source、store、shadow/path 和关键输出。验证通过：`task.json` JSON 解析、`scripts/Test-PathOverlay.ps1` 语法检查、`scripts/test.ps1`、`scripts/build.ps1`、`scripts/package-test-machine.ps1 -Configuration Release`。当前会话具备管理员权限，但 `bcdedit /enum {current}` 未显示 `testsigning Yes`，无法本机加载测试签名驱动执行真实 E2E；T028 暂标记 blocked，等待在启用 test-signing 的测试机运行 `test-machine-package/Run-PathOverlay-Test.cmd` 并通过后再改为 done。
+
+2026-04-28：用户在启用 test-signing 的测试机运行 `test-machine-package/Run-PathOverlay-Test.cmd`，结果为 “PathOverlay test package passed all automated checks.” T028 的用户态测试、测试机多规则隔离、文件与目录 rename/move、目录 tombstone/枚举、按 rule id commit/discard、占用失败日志验收均已满足，状态改为 done。
