@@ -112,6 +112,18 @@ int wmain() {
     nestedStore.store = source + L"\\store";
     ok &= Expect(!pathoverlay::ValidateOverlayRule(nestedStore).ok(), L"store inside source should be rejected");
 
+    pathoverlay::OverlayRule missingStore = rule;
+    missingStore.store = TempPathOverlayDir(L"missing-store");
+    ok &= Expect(pathoverlay::ValidateOverlayRule(missingStore).ok(), L"missing store should be allowed");
+
+    const std::wstring storeFile = TempPathOverlayDir(L"store-file.txt");
+    ok &= Expect(WriteTextFile(storeFile, "not a directory"), L"store file should be created");
+    pathoverlay::OverlayRule fileStore = rule;
+    fileStore.store = storeFile;
+    const pathoverlay::RuleValidationResult fileStoreResult = pathoverlay::ValidateOverlayRule(fileStore);
+    ok &= Expect(!fileStoreResult.ok() && fileStoreResult.message == L"store path must be a directory",
+                 L"existing file store should be rejected");
+
     const std::wstring source2 = TempPathOverlayDir(L"source2");
     const std::wstring store2 = TempPathOverlayDir(L"store2");
     EnsureDirectory(source2);

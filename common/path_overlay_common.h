@@ -16,6 +16,7 @@ enum class RuleValidationCode {
     kSourceDoesNotExist,
     kSourceIsNotDirectory,
     kSourceIsReparsePoint,
+    kStoreIsNotDirectory,
     kSourceStoreOverlap,
     kRuleOverlap,
     kRealPathOutsideSource,

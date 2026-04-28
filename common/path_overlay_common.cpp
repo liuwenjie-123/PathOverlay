@@ -212,6 +212,12 @@ RuleValidationResult ValidateOverlayRule(const OverlayRule& rule) {
         return Error(RuleValidationCode::kSourceIsReparsePoint, L"source reparse points are not supported in MVP");
     }
 
+    const DWORD storeAttributes = GetFileAttributesW(store.c_str());
+    if (storeAttributes != INVALID_FILE_ATTRIBUTES &&
+        (storeAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        return Error(RuleValidationCode::kStoreIsNotDirectory, L"store path must be a directory");
+    }
+
     return RuleValidationResult{};
 }
 

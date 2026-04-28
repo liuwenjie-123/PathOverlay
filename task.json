@@ -761,6 +761,28 @@
         "T028"
       ],
       "notes_ref": "docs/task-notes.md#T033"
+    },
+    {
+      "id": "T034",
+      "title": "校验自定义 store 路径必须为目录",
+      "status": "done",
+      "description": "rule add 指定 --store 时，若 store 路径已经存在，必须拒绝普通文件等非目录路径，避免把文件路径保存为规则 store。",
+      "deliverables": [
+        "公共规则校验拒绝已有非目录 store",
+        "README 使用说明更新",
+        "用户态测试覆盖已有文件作为 store 的场景"
+      ],
+      "test_criteria": [
+        "已有目录作为 store 仍可创建规则",
+        "不存在的 store 路径仍按目录语义允许",
+        "已有普通文件作为 store 时 rule add 校验失败并提示 store path must be a directory",
+        "task.json 可被 JSON 解析",
+        "scripts/build.ps1 和 scripts/test.ps1 通过"
+      ],
+      "depends_on": [
+        "T021"
+      ],
+      "notes_ref": "docs/task-notes.md#T034"
     }
   ]
 }

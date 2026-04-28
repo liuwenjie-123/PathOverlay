@@ -209,7 +209,7 @@ CLI 示例：
 .\pathoverlay.exe rule add C:\Temp\AnotherSource --store D:\PathOverlayStore\AnotherSource
 ```
 
-每次 `rule add` 成功都会返回自动生成的 rule id。未指定 `--store` 时，服务会为该规则生成独立 store；指定 `--store` 时，该路径会持久化并参与重叠校验。
+每次 `rule add` 成功都会返回自动生成的 rule id。未指定 `--store` 时，服务会为该规则生成独立 store；指定 `--store` 时，该路径会持久化并参与重叠校验；如果该 store 路径已经存在，必须是目录。
 
 查看当前规则和隔离目录：
 
@@ -333,6 +333,7 @@ sc.exe delete PathOverlayFlt
 - `driver status` 失败：确认 `PathOverlayFlt` 已加载，驱动签名可信，test-signing 已启用并重启。
 - 驱动无法加载：确认管理员权限、WDK 构建产物、测试证书导入和 `bcdedit /set testsigning on`。
 - `rule add` 失败并提示规则重叠：检查新 source 是否与已有 source 互相包含，或 source/store 是否互相嵌套。
+- `rule add` 失败并提示 `store path must be a directory`：检查 `--store` 是否指向已有普通文件；store 必须是目录路径。
 - `rule enable`、`rule disable` 或 `rule delete` 失败：确认命令包含 `--rule <id>`，并用 `pathoverlay rule show` 查看有效 id；删除前还要确认该规则没有 pending changes。
 - 测试数据残留：运行 `.\scripts\cleanup-test-data.ps1 -IncludeDriverAndService`。
 
