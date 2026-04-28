@@ -204,3 +204,9 @@
 2026-04-28：任务开始，目标是降低 discard 后立刻访问 source 目录时的卡顿。计划将同步 `remove_all(store\drive)` 改为先快速 rename 到 store 下的 cleanup 目录，使驱动不再命中旧 shadow，再清理 metadata 并在后台删除 cleanup 目录。
 
 2026-04-28：已将 `OverlayOperations::Discard` 改为先把 `store\drive` 快速 rename 到 `.discard-cleanup-<rule>-<pid>-<tick>`，再删除该 rule 的 changes；metadata 删除成功后用后台 detached 线程递归删除 cleanup 目录。若隔离 rename 失败则 discard 失败并保留 metadata，避免旧 shadow 仍在 active drive 路径时误报成功；若 metadata 删除失败会尝试把 cleanup 目录 rename 回 `store\drive`。README 已说明 discard 会先移出旧 shadow 并后台删除大目录；用户态测试新增 discard 后旧 active shadow 路径立即不可见的断言。验证通过：`task.json` JSON 解析、`git diff --check`、`scripts/build.ps1`、`scripts/test.ps1`，以及 Debug SkipDriver 服务集成验证 discard 后 changes 立即清空、旧 `store\drive` shadow 路径不可见、真实文件未修改；验证后已卸载 Debug 服务。
+
+<a id="T036"></a>
+
+## T036 - 规划稳定化与恢复策略
+
+2026-04-28：已新增 `docs/Stabilization_and_Recovery_Plan.md`，定义稳定化阶段的 operation 状态机、commit/discard 中断恢复策略、discard cleanup queue 持久化和重启续删策略、`status`、`doctor`、`diagnostics collect` 输出范围、dry-run 和 `changes --rule` 语义，以及 repair、restore、rollback 第一阶段不自动执行的边界。README 已补充该稳定化计划入口，并明确当前 vNext 原型尚未完成 operation 恢复、cleanup 续删、诊断命令、dry-run 和备份恢复能力，第一阶段只做保守诊断和可重试状态记录，不宣称完整 rollback。验证通过：`task.json` JSON 解析、`docs/Stabilization_and_Recovery_Plan.md` 存在且覆盖 T036 验收点、README 引用该文档。

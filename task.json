@@ -805,6 +805,201 @@
         "T026"
       ],
       "notes_ref": "docs/task-notes.md#T035"
+    },
+    {
+      "id": "T036",
+      "title": "规划稳定化与恢复策略",
+      "status": "done",
+      "description": "设计 commit/discard 中断恢复、后台清理恢复、诊断命令、dry-run 和备份恢复边界，作为 vNext 原型后的稳定化阶段入口。",
+      "deliverables": [
+        "docs/Stabilization_and_Recovery_Plan.md",
+        "稳定化阶段任务验收边界",
+        "README 限制与方向说明更新"
+      ],
+      "test_criteria": [
+        "文档明确 commit/discard operation 状态机",
+        "文档明确 discard cleanup 队列和服务重启后的处理策略",
+        "文档明确 status、doctor 和 diagnostics collect 的输出范围",
+        "文档明确 repair、restore 和 rollback 第一阶段哪些能力不自动执行",
+        "task.json 可被 JSON 解析"
+      ],
+      "depends_on": [
+        "T035"
+      ],
+      "notes_ref": "docs/task-notes.md#T036"
+    },
+    {
+      "id": "T037",
+      "title": "实现 commit/discard 操作状态与启动恢复",
+      "status": "pending",
+      "description": "为 commit/discard 增加持久 operation 状态，服务启动时识别 running 或 failed 状态并保守恢复，避免中断后元数据和 shadow 状态不可判断。",
+      "deliverables": [
+        "元数据 operation 状态记录",
+        "服务启动恢复逻辑",
+        "用户态恢复测试"
+      ],
+      "test_criteria": [
+        "中断遗留的 running operation 会转为可诊断的 failed 或 recoverable 状态",
+        "恢复流程不会删除 pending changes 或 shadow 数据",
+        "恢复后同一 rule 可再次执行 commit 或 discard",
+        "恢复状态可被后续诊断命令读取",
+        "scripts/build.ps1 和 scripts/test.ps1 通过"
+      ],
+      "depends_on": [
+        "T036"
+      ]
+    },
+    {
+      "id": "T038",
+      "title": "持久化 discard 后台清理队列",
+      "status": "pending",
+      "description": "将 discard 后 detached 后台删除改为可追踪 cleanup queue，服务重启后继续清理或报告失败。",
+      "deliverables": [
+        "cleanup 队列元数据",
+        "服务启动 cleanup 扫描与续删",
+        "清理失败诊断信息"
+      ],
+      "test_criteria": [
+        "discard 成功后 active store\\drive 立即移走",
+        "服务重启后会继续删除未完成的 cleanup 目录",
+        "cleanup 删除失败时保留可诊断状态",
+        "cleanup 队列处理不修改真实 source 文件或目录",
+        "scripts/build.ps1 和 scripts/test.ps1 通过"
+      ],
+      "depends_on": [
+        "T037"
+      ]
+    },
+    {
+      "id": "T039",
+      "title": "新增 status 和 doctor 诊断命令",
+      "status": "pending",
+      "description": "提供只读诊断视图，帮助判断服务、驱动、规则、pending changes、operation 和 cleanup 状态。",
+      "deliverables": [
+        "pathoverlay status 命令",
+        "pathoverlay doctor 命令",
+        "CLI 与服务 IPC 诊断接口",
+        "诊断命令测试覆盖"
+      ],
+      "test_criteria": [
+        "status 输出服务和驱动连接状态",
+        "status 输出规则数量、pending changes 数量和 cleanup 状态",
+        "doctor 可发现 orphan cleanup、missing shadow 和 failed operation",
+        "doctor 默认不修改 metadata、shadow 或真实 source",
+        "scripts/build.ps1 和 scripts/test.ps1 通过"
+      ],
+      "depends_on": [
+        "T038"
+      ]
+    },
+    {
+      "id": "T040",
+      "title": "增加诊断包收集与日志改进",
+      "status": "pending",
+      "description": "统一收集服务日志、规则、changes、driver status、operation、cleanup 状态和测试环境信息，降低测试机和用户环境问题定位成本。",
+      "deliverables": [
+        "pathoverlay diagnostics collect 命令",
+        "服务日志字段补充",
+        "测试机失败诊断收集增强"
+      ],
+      "test_criteria": [
+        "diagnostics collect 可生成诊断目录或 zip",
+        "诊断包包含 rule show、changes、status、doctor 和服务日志",
+        "诊断包包含 SCM 或 driver 基础状态信息",
+        "测试机 E2E 失败时自动输出诊断包路径",
+        "scripts/build.ps1 和 scripts/test.ps1 通过"
+      ],
+      "depends_on": [
+        "T039"
+      ]
+    },
+    {
+      "id": "T041",
+      "title": "增加 rule 级 changes 过滤与 dry-run",
+      "status": "pending",
+      "description": "降低 commit/discard 误操作风险，支持按 rule 查看变更，并在执行前进行只读预检。",
+      "deliverables": [
+        "changes --rule <id>",
+        "commit --dry-run --rule <id>",
+        "discard --dry-run --rule <id>",
+        "dry-run 测试覆盖"
+      ],
+      "test_criteria": [
+        "changes --rule <id> 只显示指定 rule 的 pending changes",
+        "commit --dry-run 输出将写入、删除和备份的路径",
+        "commit --dry-run 不修改真实 source、shadow 或 metadata",
+        "discard --dry-run 输出将清理的 shadow 和 metadata 范围",
+        "discard --dry-run 不修改真实 source、shadow 或 metadata",
+        "scripts/build.ps1 和 scripts/test.ps1 通过"
+      ],
+      "depends_on": [
+        "T039"
+      ]
+    },
+    {
+      "id": "T042",
+      "title": "设计备份索引与手动恢复能力",
+      "status": "pending",
+      "description": "设计 commit backup 的可查询和恢复边界，先明确备份索引和手动恢复命令语义，不直接承诺完整事务回滚。",
+      "deliverables": [
+        "备份索引设计",
+        "backup list 和 restore 命令语义",
+        "恢复风险限制文档"
+      ],
+      "test_criteria": [
+        "文档明确 backup list 的输入和输出",
+        "文档明确 restore 的冲突处理和 pending changes 限制",
+        "文档明确第一版只恢复已有备份内容",
+        "文档明确不宣称完整事务 rollback",
+        "task.json 可被 JSON 解析"
+      ],
+      "depends_on": [
+        "T041"
+      ]
+    },
+    {
+      "id": "T043",
+      "title": "扩展路径与属性兼容性测试",
+      "status": "pending",
+      "description": "补齐真实使用中容易出问题的路径和文件属性场景，覆盖用户态测试和测试机驱动 E2E。",
+      "deliverables": [
+        "用户态兼容性测试",
+        "测试机 E2E 兼容性测试",
+        "docs/Testing.md 测试说明更新"
+      ],
+      "test_criteria": [
+        "测试覆盖长路径和 Unicode 路径",
+        "测试覆盖大小写差异和 8.3 短路径",
+        "测试覆盖只读属性和时间戳保留",
+        "测试覆盖空目录和嵌套目录",
+        "scripts/test.ps1 和测试机 Run-PathOverlay-Test.cmd 通过"
+      ],
+      "depends_on": [
+        "T041"
+      ]
+    },
+    {
+      "id": "T044",
+      "title": "更新稳定化文档与发布检查清单",
+      "status": "pending",
+      "description": "把稳定化阶段新增命令、诊断流程、恢复限制和测试流程写入用户文档，并形成发布前检查清单。",
+      "deliverables": [
+        "README 稳定化命令说明",
+        "docs/Testing.md 稳定化测试说明",
+        "稳定化 release checklist",
+        "docs/task-notes.md 验收记录"
+      ],
+      "test_criteria": [
+        "README 说明 status、doctor、diagnostics collect 和 dry-run",
+        "docs/Testing.md 说明新增兼容性测试和诊断包验证流程",
+        "release checklist 覆盖构建、用户态测试、测试机 E2E 和清理步骤",
+        "task notes 有 T036 到 T044 的对应验收记录或明确说明",
+        "scripts/test.ps1 通过"
+      ],
+      "depends_on": [
+        "T040",
+        "T043"
+      ]
     }
   ]
 }

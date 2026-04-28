@@ -2,7 +2,7 @@
 
 PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driver + 用户态服务 + CLI` 实现指定本地目录的 copy-on-write 重定向。它的目标是在 commit 前保护真实目录：写入进入隔离目录，删除记录为 tombstone，用户可以选择提交或丢弃变更。
 
-当前仓库已经完成 vNext 原型任务，不是生产级沙箱。设计背景见 `PathOverlay_Design.md`，MVP 历史边界见 `docs/Design_Review_and_Revisions.md` 和 `docs/MVP_Development_Plan.md`；当前能力、测试状态和后续限制以本 README、`docs/Testing.md`、`docs/vNext_Metadata_and_Compatibility.md` 和 `task.json` 为准。
+当前仓库已经完成 vNext 原型任务，不是生产级沙箱。设计背景见 `PathOverlay_Design.md`，MVP 历史边界见 `docs/Design_Review_and_Revisions.md` 和 `docs/MVP_Development_Plan.md`；当前能力、测试状态和后续限制以本 README、`docs/Testing.md`、`docs/vNext_Metadata_and_Compatibility.md`、`docs/Stabilization_and_Recovery_Plan.md` 和 `task.json` 为准。
 
 ## 当前能力
 
@@ -28,6 +28,8 @@ PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driv
 - 不支持 per-rule include/exclude pattern、排除路径和按进程规则。
 - 不支持注册表虚拟化，也不提供完整系统盘保护或安全沙箱边界。
 - 不覆盖硬链接、alternate data streams、完整 ACL 继承和复杂安全语义。
+- 当前 vNext 原型尚未完成稳定化恢复层：commit/discard 中断后的 operation 状态、discard 后台 cleanup 重启续删、`status`、`doctor`、`diagnostics collect`、dry-run 和备份恢复能力按 `docs/Stabilization_and_Recovery_Plan.md` 分阶段实现。
+- 第一阶段恢复能力只做保守诊断和可重试状态记录，不自动 repair、restore 或宣称完整 rollback。
 - 真实驱动测试需要 Windows 测试机、管理员权限、test-signing 和签名证书。
 
 ## 环境要求
