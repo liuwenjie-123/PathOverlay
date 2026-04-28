@@ -733,6 +733,34 @@
       "depends_on": [
         "T030"
       ]
+    },
+    {
+      "id": "T033",
+      "title": "新增 rule 删除接口并保持初始无默认规则",
+      "status": "done",
+      "description": "新增 pathoverlay rule delete/del --rule <id> 接口，服务端按 rule id 删除规则并同步驱动；确认服务刚安装和重置数据后不会创建默认 rule。",
+      "deliverables": [
+        "CLI rule delete/del 命令",
+        "服务端规则删除处理",
+        "元数据删除规则能力",
+        "README 使用说明更新",
+        "用户态和服务集成测试覆盖"
+      ],
+      "test_criteria": [
+        "rule delete --rule <id> 可删除无 pending changes 的规则",
+        "rule del --rule <id> 作为别名可用",
+        "删除不存在的 rule id 返回 ERROR",
+        "存在 pending changes 的规则删除会被拒绝并保留规则",
+        "删除规则后 rule show 不再列出该规则且驱动规则同步更新",
+        "服务刚安装或 ResetData 后 rule show 返回 no rules",
+        "task.json 可被 JSON 解析",
+        "scripts/build.ps1 和 scripts/test.ps1 通过"
+      ],
+      "depends_on": [
+        "T021",
+        "T028"
+      ],
+      "notes_ref": "docs/task-notes.md#T033"
     }
   ]
 }

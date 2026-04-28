@@ -79,6 +79,8 @@ void PrintUsage() {
         << L"  pathoverlay rule add <source> [--store <path>]\n"
         << L"  pathoverlay rule enable --rule <id>\n"
         << L"  pathoverlay rule disable --rule <id>\n"
+        << L"  pathoverlay rule delete --rule <id>\n"
+        << L"  pathoverlay rule del --rule <id>\n"
         << L"  pathoverlay rule show\n"
         << L"  pathoverlay debug service-write <path> <content>\n"
         << L"  pathoverlay debug prepare-cow --rule <id> <path>\n"
@@ -109,6 +111,11 @@ int wmain(int argc, wchar_t* argv[]) {
         }
         if (argc == 5 && std::wstring(argv[2]) == L"disable" && std::wstring(argv[3]) == L"--rule") {
             return SendRequest(L"rule disable --rule " + std::wstring(argv[4]));
+        }
+        if (argc == 5 &&
+            (std::wstring(argv[2]) == L"delete" || std::wstring(argv[2]) == L"del") &&
+            std::wstring(argv[3]) == L"--rule") {
+            return SendRequest(L"rule delete --rule " + std::wstring(argv[4]));
         }
         PrintUsage();
         return 1;

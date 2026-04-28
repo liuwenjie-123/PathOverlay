@@ -53,6 +53,7 @@ public:
     bool SetRuleEnabled(const std::wstring& ruleId, bool enabled, std::wstring* error);
     bool GetRule(const std::wstring& ruleId, OverlayRule* rule, std::wstring* error);
     bool ListRules(std::vector<OverlayRule>* rules, std::wstring* error);
+    bool DeleteRule(const std::wstring& ruleId, std::wstring* error);
     bool AddOrUpdateChange(const std::wstring& ruleId, const ChangeRecord& record, std::wstring* error);
     bool ListChanges(const std::wstring& ruleId, std::vector<ChangeRecord>* records, std::wstring* error);
     bool DeleteChange(const std::wstring& ruleId, const std::wstring& realPath, std::wstring* error);

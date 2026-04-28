@@ -282,7 +282,7 @@ function Install-And-TestService {
 
     try {
         $ruleShow = Invoke-Cli @("rule", "show") "CLI IPC test failed."
-        Write-Check "CLI to service IPC" ($ruleShow -match "^OK") $ruleShow
+        Write-Check "fresh service install leaves no rules" ($ruleShow -match "OK no rules") $ruleShow
         $driverStatus = Invoke-Cli @("driver", "status") "Service did not connect to the driver communication port."
         Write-Check "service to driver port" ($driverStatus -match "OK driver connected") $driverStatus
     } catch {
@@ -395,6 +395,29 @@ function Test-MultiRuleDriverBehavior {
         Set-Content -Path $real2 -Value "overlay-two-after-overlap-reject" -Encoding ASCII
         $shadow2AfterReject = Get-Content -Path $shadow2 -Raw
         Write-Check "driver sync still works after rejected overlap" ($shadow2AfterReject -match "overlay-two-after-overlap-reject") "shadow=$shadow2 content=$($shadow2AfterReject.Trim())"
+
+        $pendingDeleteFailure = Invoke-CliExpectFailure @("rule", "delete", "--rule", $rule1.Id) "Rule delete with pending changes should be rejected."
+        Write-Check "rule delete rejects pending changes" ($pendingDeleteFailure -match "pending changes") $pendingDeleteFailure
+        $missingDeleteFailure = Invoke-CliExpectFailure @("rule", "delete", "--rule", "missing-rule-id") "Deleting a missing rule should fail."
+        Write-Check "rule delete rejects missing id" ($missingDeleteFailure -match "rule not found") $missingDeleteFailure
+
+        $source3 = Join-Path $testRoot "source-three"
+        $source4 = Join-Path $testRoot "source-four"
+        New-Item -ItemType Directory -Path $source3, $source4 -Force | Out-Null
+        Invoke-Cli @("rule", "add", $source3) "Failed to add third rule for delete verification." | Out-Null
+        Invoke-Cli @("rule", "add", $source4) "Failed to add fourth rule for del alias verification." | Out-Null
+        $deleteRuleShow = Invoke-Cli @("rule", "show") "Failed to show rules before delete verification."
+        $rule3 = Get-RuleBySource $deleteRuleShow $source3
+        $rule4 = Get-RuleBySource $deleteRuleShow $source4
+        Invoke-Cli @("rule", "delete", "--rule", $rule3.Id) "Failed to delete third rule." | Out-Null
+        Invoke-Cli @("rule", "del", "--rule", $rule4.Id) "Failed to delete fourth rule with del alias." | Out-Null
+        $afterDeleteRuleShow = Invoke-Cli @("rule", "show") "Failed to show rules after delete verification."
+        Write-Check "rule delete removes rule from show" ($afterDeleteRuleShow -notmatch [regex]::Escape($rule3.Id)) $afterDeleteRuleShow
+        Write-Check "rule del alias removes rule from show" ($afterDeleteRuleShow -notmatch [regex]::Escape($rule4.Id)) $afterDeleteRuleShow
+
+        Set-Content -Path $real2 -Value "overlay-two-after-delete" -Encoding ASCII
+        $shadow2AfterDelete = Get-Content -Path $shadow2 -Raw
+        Write-Check "driver sync still works after rule delete" ($shadow2AfterDelete -match "overlay-two-after-delete") "shadow=$shadow2 content=$($shadow2AfterDelete.Trim())"
 
         $serviceLog = Join-Path $env:ProgramData "PathOverlay\logs\PathOverlaySvc.log"
         if (Test-Path $serviceLog) {

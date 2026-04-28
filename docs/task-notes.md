@@ -178,3 +178,11 @@
 2026-04-28：任务开始，目标是同步 README、测试文档和设计边界，明确当前 vNext 已实现能力、CLI 命令、测试流程以及仍不支持的范围。
 
 2026-04-28：已更新 README，明确当前 vNext 原型状态、多规则、目录和文件 rename/move、按 rule id commit/discard、占用检测和 `changes` 多规则输出；已更新 `docs/Testing.md`，补充测试机 E2E 通过标志和失败日志上下文；已更新设计审查文档，保留 MVP 历史边界并追加 vNext 已实现边界和仍不支持范围；已调整 vNext 元数据文档开头，说明当前用户可见行为以 README 和测试文档为准。验证通过：`task.json` JSON 解析、README/Testing 引用脚本存在性检查、T019-T028 done 任务 notes_ref 检查、`scripts/test.ps1`。T029 验收项已满足，状态改为 done。
+
+<a id="T033"></a>
+
+## T033 - 新增 rule 删除接口并保持初始无默认规则
+
+2026-04-28：任务开始，目标是新增 `pathoverlay rule delete/del --rule <id>`，服务端按 rule id 删除无 pending changes 的规则并同步驱动，同时确认安装和 ResetData 后初始状态仍为 no rules，不创建默认 rule。
+
+2026-04-28：已新增 `pathoverlay rule delete --rule <id>` 和 `pathoverlay rule del --rule <id>`；服务端删除前按 rule id 查询规则并拒绝仍有 pending changes 的规则，删除成功后重新同步驱动规则缓存。元数据层新增 `DeleteRule`，README 和安装脚本示例已更新。测试机 E2E 脚本新增 fresh install no rules、pending changes 删除拒绝、缺失 rule id 删除失败、`delete`/`del` 删除无 pending 规则、删除后 rule show 不再列出以及删除后驱动同步仍可写入现有规则的断言。验证通过：`task.json` JSON 解析、`scripts/build.ps1`、`scripts/test.ps1`、`scripts/test.ps1 -Configuration Release`、`scripts/Test-PathOverlay.ps1` 语法检查、`x64/Debug/install-start.ps1 -SkipDriver -ResetData` 显示 `OK no rules`、SkipDriver 服务集成手工验证 rule delete/del/缺失 id/pending changes 拒绝、`scripts/package-test-machine.ps1 -Configuration Release`。当前本机 BCD 当前项未显示 `testsigning Yes`，未在本机加载驱动跑完整 E2E；已生成新 `test-machine-package` 供测试机复跑。

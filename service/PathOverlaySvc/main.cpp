@@ -1081,6 +1081,37 @@ std::wstring ProcessRequest(const std::wstring& request) {
             syncError);
     }
 
+    if (request == L"rule delete" || request == L"rule del") {
+        return L"ERROR rule id is required: use --rule <id>";
+    }
+
+    if (TryParseRuleIdCommand(request, L"rule delete", &ruleId) ||
+        TryParseRuleIdCommand(request, L"rule del", &ruleId)) {
+        pathoverlay::OverlayRule rule;
+        if (!metadata.GetRule(ruleId, &rule, &error)) {
+            return L"ERROR rule not found: " + ruleId;
+        }
+
+        std::vector<pathoverlay::ChangeRecord> records;
+        if (!metadata.ListChanges(rule.id, &records, &error)) {
+            return L"ERROR " + error;
+        }
+        if (!records.empty()) {
+            return L"ERROR rule has pending changes: discard or commit before deleting rule=" + rule.id;
+        }
+
+        if (!metadata.DeleteRule(rule.id, &error)) {
+            return L"ERROR " + error;
+        }
+
+        std::wstring syncError;
+        std::vector<pathoverlay::OverlayRule> rules;
+        if (!metadata.ListRules(&rules, &syncError) || !PushDriverRules(rules, &syncError)) {
+            WriteLog(L"driver: failed to sync deleted rule: " + syncError);
+        }
+        return AppendDriverSyncWarning(L"OK rule deleted: " + rule.id, syncError);
+    }
+
     if (request == L"rule show") {
         std::vector<pathoverlay::OverlayRule> rules;
         if (!metadata.ListRules(&rules, &error)) {

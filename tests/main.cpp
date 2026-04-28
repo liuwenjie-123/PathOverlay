@@ -187,9 +187,11 @@ int wmain() {
         pathoverlay::OverlayRule persistedRule2;
         ok &= Expect(metadata.GetRule(rule2.id, &persistedRule2, &sqliteError), L"second rule should be queried");
         ok &= Expect(persistedRule2.enabled, L"second rule should reflect enabled state");
+        ok &= Expect(metadata.DeleteRule(rule2.id, &sqliteError), L"second rule should be deleted");
+        ok &= Expect(!metadata.GetRule(rule2.id, &persistedRule2, &sqliteError), L"deleted rule should not be queried");
         std::vector<pathoverlay::OverlayRule> persistedRules;
         ok &= Expect(metadata.ListRules(&persistedRules, &sqliteError), L"multiple rules should be listed");
-        ok &= Expect(persistedRules.size() >= 2, L"multiple non-overlapping rules should be persisted");
+        ok &= Expect(persistedRules.size() == 1 && persistedRules[0].id == rule.id, L"deleted rule should be absent from rule list");
         pathoverlay::OverlayRule customStoreRule{
             L"rule-custom-store",
             L"custom-store",

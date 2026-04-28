@@ -197,6 +197,7 @@ CLI 示例：
 .\pathoverlay.exe discard --rule <id>
 .\pathoverlay.exe rule disable --rule <id>
 .\pathoverlay.exe rule enable --rule <id>
+.\pathoverlay.exe rule delete --rule <id>
 ```
 
 ## 覆盖层日常使用
@@ -229,6 +230,15 @@ rule-20260427-120000-1234-5678 enabled=true source=C:\Temp\PathOverlaySource sto
 .\pathoverlay.exe rule disable --rule rule-20260427-120000-1234-5678
 .\pathoverlay.exe rule enable --rule rule-20260427-120000-1234-5678
 ```
+
+删除无 pending changes 的规则：
+
+```powershell
+.\pathoverlay.exe rule delete --rule rule-20260427-120000-1234-5678
+.\pathoverlay.exe rule del --rule rule-20260427-120000-1234-5678
+```
+
+如果规则仍有 pending changes，删除会失败；先执行 `commit` 或 `discard` 后再删除。删除规则只移除规则元数据并同步驱动规则缓存，不递归删除自定义 `store` 目录。
 
 规则启用后，写入 `source` 内的文件不会在 commit 前直接修改真实文件。新建或修改：
 
@@ -323,7 +333,7 @@ sc.exe delete PathOverlayFlt
 - `driver status` 失败：确认 `PathOverlayFlt` 已加载，驱动签名可信，test-signing 已启用并重启。
 - 驱动无法加载：确认管理员权限、WDK 构建产物、测试证书导入和 `bcdedit /set testsigning on`。
 - `rule add` 失败并提示规则重叠：检查新 source 是否与已有 source 互相包含，或 source/store 是否互相嵌套。
-- `rule enable` 或 `rule disable` 失败：确认命令包含 `--rule <id>`，并用 `pathoverlay rule show` 查看有效 id。
+- `rule enable`、`rule disable` 或 `rule delete` 失败：确认命令包含 `--rule <id>`，并用 `pathoverlay rule show` 查看有效 id；删除前还要确认该规则没有 pending changes。
 - 测试数据残留：运行 `.\scripts\cleanup-test-data.ps1 -IncludeDriverAndService`。
 
 ## 仓库结构

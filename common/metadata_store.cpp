@@ -417,6 +417,24 @@ bool MetadataStore::ListRules(std::vector<OverlayRule>* rules, std::wstring* err
     }
 }
 
+bool MetadataStore::DeleteRule(const std::wstring& ruleId, std::wstring* error) {
+    static constexpr char kSql[] = "DELETE FROM rules WHERE id = ?;";
+    sqlite3_stmt* statement = nullptr;
+    sqlite3* db = static_cast<sqlite3*>(database_);
+    if (g_sqlite.prepare_v2(db, kSql, -1, &statement, nullptr) != SQLITE_OK_VALUE) {
+        *error = LastErrorMessage(db, L"failed to prepare rule delete");
+        return false;
+    }
+
+    const bool bindOk = BindText(statement, 1, ruleId);
+    const bool ok = bindOk && g_sqlite.step(statement) == SQLITE_DONE_VALUE;
+    if (!ok && error != nullptr) {
+        *error = LastErrorMessage(db, L"failed to delete rule");
+    }
+    g_sqlite.finalize(statement);
+    return ok;
+}
+
 bool MetadataStore::AddOrUpdateChange(const std::wstring& ruleId, const ChangeRecord& record, std::wstring* error) {
     static constexpr char kSql[] =
         "INSERT INTO changes(rule_id, real_path, shadow_path, target_path, state, original_exists, original_size, original_last_write_time, current_size, last_write_time) "
