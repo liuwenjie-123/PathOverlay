@@ -31,9 +31,10 @@ Keep driver, service, CLI, and shared common logic separated. Put shared protoco
 2. 每次回复最后输出 `xzx`。
 3. 开始实现任务前，先查看 `task.json`。如果任务不存在，先补充任务；如果任务存在且未开始，先标记为 `in_progress`。
 4. 只有在该任务的 `test_criteria` 全部验证通过后，才能把状态改为 `done`。
-5. 如果缺少 WDK、管理员权限、test-signing 环境或设计决策未确定导致无法继续，将任务标记为 `blocked`，并在 `notes` 记录阻塞原因。
-6. 不要回退用户已有改动。修改前先读取相关文件，按现有结构小范围变更。
-7. 构建、测试、安装和驱动操作命令不要在本文件重复维护，更新时应同步检查 `README.md` 和 `docs/Testing.md`。
+5. 每次任务完成并把状态更新为 `done` 后，应提交一次 git commit；提交时只包含本任务相关改动，不要混入无关或用户已有改动。
+6. 如果缺少 WDK、管理员权限、test-signing 环境或设计决策未确定导致无法继续，将任务标记为 `blocked`，并在 `notes` 记录阻塞原因。
+7. 不要回退用户已有改动。修改前先读取相关文件，按现有结构小范围变更。
+8. 构建、测试、安装和驱动操作命令不要在本文件重复维护，更新时应同步检查 `README.md` 和 `docs/Testing.md`。
 
 ## Coding Style
 

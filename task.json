@@ -392,6 +392,23 @@
       "depends_on": [
         "T016"
       ]
+    },
+    {
+      "id": "T032",
+      "title": "补充任务完成后 git 提交规则",
+      "status": "done",
+      "description": "在 AGENTS.md 的 Codex Workflow 中补充每次任务完成后提交一次 git commit 的协作规则。",
+      "deliverables": [
+        "AGENTS.md git 提交规则"
+      ],
+      "test_criteria": [
+        "AGENTS.md 明确要求任务完成并标记 done 后提交一次 git commit",
+        "AGENTS.md 明确提交只包含本任务相关改动",
+        "task.json 可被 JSON 解析"
+      ],
+      "depends_on": [
+        "T017"
+      ]
     }
   ]
 }
