@@ -186,3 +186,5 @@
 2026-04-28：任务开始，目标是新增 `pathoverlay rule delete/del --rule <id>`，服务端按 rule id 删除无 pending changes 的规则并同步驱动，同时确认安装和 ResetData 后初始状态仍为 no rules，不创建默认 rule。
 
 2026-04-28：已新增 `pathoverlay rule delete --rule <id>` 和 `pathoverlay rule del --rule <id>`；服务端删除前按 rule id 查询规则并拒绝仍有 pending changes 的规则，删除成功后重新同步驱动规则缓存。元数据层新增 `DeleteRule`，README 和安装脚本示例已更新。测试机 E2E 脚本新增 fresh install no rules、pending changes 删除拒绝、缺失 rule id 删除失败、`delete`/`del` 删除无 pending 规则、删除后 rule show 不再列出以及删除后驱动同步仍可写入现有规则的断言。验证通过：`task.json` JSON 解析、`scripts/build.ps1`、`scripts/test.ps1`、`scripts/test.ps1 -Configuration Release`、`scripts/Test-PathOverlay.ps1` 语法检查、`x64/Debug/install-start.ps1 -SkipDriver -ResetData` 显示 `OK no rules`、SkipDriver 服务集成手工验证 rule delete/del/缺失 id/pending changes 拒绝、`scripts/package-test-machine.ps1 -Configuration Release`。当前本机 BCD 当前项未显示 `testsigning Yes`，未在本机加载驱动跑完整 E2E；已生成新 `test-machine-package` 供测试机复跑。
+
+2026-04-28：用户在测试机运行新 `test-machine-package`，结果为 `PathOverlay test package passed all automated checks.` T033 的真实驱动 E2E 验收已通过。
