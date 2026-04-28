@@ -87,3 +87,22 @@ MVP 必须支持：
 - commit 写回真实目录。
 - discard 丢弃隔离数据。
 
+## vNext 已实现边界
+
+vNext 在 MVP 闭环上扩展了多规则和更多文件系统语义。当前实现支持：
+
+- 多条互不重叠的本地目录规则，每条规则有独立 rule id 和 store。
+- 按 rule id 执行 enable、disable、commit 和 discard。
+- 文件和目录 create/delete/rename/move，rename/move 限定在同一 rule、同一卷且目标不存在。
+- 目录 tombstone、目录枚举合并、renamed source 隐藏和 renamed target shadow 读取。
+- commit/discard 前占用检测；默认只报告占用进程，显式确认后才关闭非关键用户进程。
+- 测试机 E2E 覆盖多规则隔离、目录 tombstone/枚举、文件与目录 rename/move、按规则 commit/discard 和占用失败日志。
+
+vNext 仍不支持：
+
+- 排除路径或 per-rule include/exclude pattern。
+- 注册表虚拟化。
+- 整盘覆盖、系统盘根目录覆盖或完整系统盘保护。
+- 跨 rule、跨卷、目标已存在或 tombstone 后的 rename/move。
+- 硬链接、NTFS alternate data streams、完整 reparse point 语义和完整 ACL 继承。
+- 把 PathOverlay 作为安全沙箱使用。

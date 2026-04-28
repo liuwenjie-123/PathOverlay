@@ -1,6 +1,6 @@
 # PathOverlay vNext Metadata and Compatibility Plan
 
-本文定义 vNext 元数据设计，覆盖多规则、目录变更、rename/move、按规则 commit/discard 和占用处理。MVP 的运行行为仍以现有实现和 README 为准；本文是后续 T020 及之后任务的实现约束。
+本文定义 vNext 元数据设计和当前实现边界，覆盖多规则、目录变更、rename/move、按规则 commit/discard 和占用处理。历史 MVP 行为见 `docs/MVP_Development_Plan.md`；当前用户可见行为以 README 和 `docs/Testing.md` 为准。
 
 ## 设计目标
 
@@ -255,4 +255,3 @@ vNext 仍不支持：
 - 跨 rule、跨卷或目标已存在的 rename/move。
 - 硬链接、ADS、完整 reparse point 语义和完整 ACL 继承。
 - 把 PathOverlay 宣称为安全沙箱。
-

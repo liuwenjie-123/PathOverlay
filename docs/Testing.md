@@ -97,5 +97,14 @@ port, installs and starts `PathOverlaySvc`, verifies CLI IPC, and exercises:
 - commit/discard by rule id;
 - occupied-file detection before commit/discard.
 
+The run is accepted only when the transcript ends with:
+
+```text
+PathOverlay test package passed all automated checks.
+```
+
+Each failing check prints rule id, source, store, relevant shadow or real paths,
+and the observed command output when that context is available.
+
 The script writes a transcript under `test-machine-package\logs\` and performs
 service and driver cleanup unless `-SkipCleanup` is used.

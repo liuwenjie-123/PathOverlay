@@ -2,7 +2,7 @@
 
 PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driver + 用户态服务 + CLI` 实现指定本地目录的 copy-on-write 重定向。它的目标是在 commit 前保护真实目录：写入进入隔离目录，删除记录为 tombstone，用户可以选择提交或丢弃变更。
 
-当前仓库是从 MVP 向 vNext 演进中的实现，不是生产级沙箱。设计背景见 `PathOverlay_Design.md`，MVP 边界以 `docs/Design_Review_and_Revisions.md`、`docs/MVP_Development_Plan.md` 和 `task.json` 为准。
+当前仓库已经完成 vNext 原型任务，不是生产级沙箱。设计背景见 `PathOverlay_Design.md`，MVP 历史边界见 `docs/Design_Review_and_Revisions.md` 和 `docs/MVP_Development_Plan.md`；当前能力、测试状态和后续限制以本 README、`docs/Testing.md`、`docs/vNext_Metadata_and_Compatibility.md` 和 `task.json` 为准。
 
 ## 当前能力
 
@@ -11,9 +11,12 @@ PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driv
 - 写入真实文件前准备 shadow copy，commit 前不直接修改真实文件。
 - 新建文件记录为 created。
 - 删除文件记录 tombstone，commit 前不删除真实文件。
-- 目录枚举合并 real/shadow，并隐藏 tombstone。
-- 支持 `commit` 写回变更，写回或删除前创建备份。
-- 支持 `discard` 丢弃隔离数据，不修改真实文件。
+- 目录 create/delete/rename/move 进入 shadow 和元数据，commit 前不提前修改真实目录。
+- 文件 rename/move 支持同一 rule 内、目标不存在的路径，commit 前只更新 shadow 和元数据。
+- 目录枚举合并 real/shadow，并隐藏 tombstone 和 renamed source。
+- 支持按 rule id 执行 `commit`，写回变更，写回或删除前创建备份。
+- 支持按 rule id 执行 `discard`，丢弃隔离数据，不修改真实文件。
+- commit/discard 前检测占用文件；默认失败并列出占用进程，显式 `--confirm-close` 时可关闭非关键用户进程后继续。
 - 服务和 store 路径排除重定向，避免递归影响。
 
 ## 已知限制
@@ -21,7 +24,9 @@ PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driv
 - 多规则 source 不能相同或互相包含，任一 source 和任一 store 不能互相嵌套。
 - 不支持整盘覆盖、盘符根目录、UNC 路径、网络路径和 reparse point 作为 source。
 - source 和 store 不能互相嵌套。
-- rename/move 在 MVP 中返回不支持。
+- rename/move 只支持同一 rule 内、同一卷内、目标不存在的文件或目录；跨 rule、跨卷、目标已存在、tombstone 后 rename 会保守失败。
+- 不支持 per-rule include/exclude pattern、排除路径和按进程规则。
+- 不支持注册表虚拟化，也不提供完整系统盘保护或安全沙箱边界。
 - 不覆盖硬链接、alternate data streams、完整 ACL 继承和复杂安全语义。
 - 真实驱动测试需要 Windows 测试机、管理员权限、test-signing 和签名证书。
 
@@ -248,6 +253,10 @@ Remove-Item C:\Temp\PathOverlaySource\old.txt
 ```powershell
 .\pathoverlay.exe changes
 ```
+
+`changes` 会按规则分组输出待处理变更，并包含 rule id、enabled 状态、source 和 store，便于在多规则场景下定位隔离数据。
+
+同一 rule 内可以 rename/move 文件或目录；源路径会在 overlay 视图中隐藏，目标路径从 shadow 读取。commit 前真实 source 不会被提前移动或删除。跨 rule、跨卷、目标已存在或 tombstone 后的 rename/move 会失败。
 
 按 rule id 丢弃该规则的覆盖层变更，不修改真实目录：
 

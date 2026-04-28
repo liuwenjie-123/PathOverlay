@@ -172,3 +172,9 @@
 2026-04-28：已修正 `pathoverlay changes`，从旧的 `default` 单规则查询改为按所有规则输出 pending changes，并在每组变更前输出 rule id、enabled、source 和 store；commit/discard 成功、操作失败和占用预检失败响应均补充 rule/source/store 上下文。测试机 E2E 脚本新增目录 tombstone 与枚举、按 rule id commit/discard 隔离、占用 commit 默认失败并保留 metadata 的场景，失败断言详情包含 rule id、source、store、shadow/path 和关键输出。验证通过：`task.json` JSON 解析、`scripts/Test-PathOverlay.ps1` 语法检查、`scripts/test.ps1`、`scripts/build.ps1`、`scripts/package-test-machine.ps1 -Configuration Release`。当前会话具备管理员权限，但 `bcdedit /enum {current}` 未显示 `testsigning Yes`，无法本机加载测试签名驱动执行真实 E2E；T028 暂标记 blocked，等待在启用 test-signing 的测试机运行 `test-machine-package/Run-PathOverlay-Test.cmd` 并通过后再改为 done。
 
 2026-04-28：用户在启用 test-signing 的测试机运行 `test-machine-package/Run-PathOverlay-Test.cmd`，结果为 “PathOverlay test package passed all automated checks.” T028 的用户态测试、测试机多规则隔离、文件与目录 rename/move、目录 tombstone/枚举、按 rule id commit/discard、占用失败日志验收均已满足，状态改为 done。
+
+## T029 - 更新 vNext 文档与任务收尾
+
+2026-04-28：任务开始，目标是同步 README、测试文档和设计边界，明确当前 vNext 已实现能力、CLI 命令、测试流程以及仍不支持的范围。
+
+2026-04-28：已更新 README，明确当前 vNext 原型状态、多规则、目录和文件 rename/move、按 rule id commit/discard、占用检测和 `changes` 多规则输出；已更新 `docs/Testing.md`，补充测试机 E2E 通过标志和失败日志上下文；已更新设计审查文档，保留 MVP 历史边界并追加 vNext 已实现边界和仍不支持范围；已调整 vNext 元数据文档开头，说明当前用户可见行为以 README 和测试文档为准。验证通过：`task.json` JSON 解析、README/Testing 引用脚本存在性检查、T019-T028 done 任务 notes_ref 检查、`scripts/test.ps1`。T029 验收项已满足，状态改为 done。

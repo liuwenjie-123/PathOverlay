@@ -659,7 +659,7 @@
     {
       "id": "T029",
       "title": "更新 vNext 文档与任务收尾",
-      "status": "pending",
+      "status": "done",
       "description": "更新 README、docs/Testing.md、设计文档和 task notes，明确 vNext 能力、命令、测试流程和仍不支持的范围。",
       "deliverables": [
         "README vNext 使用说明",
@@ -677,7 +677,8 @@
       ],
       "depends_on": [
         "T028"
-      ]
+      ],
+      "notes_ref": "docs/task-notes.md#T029"
     },
     {
       "id": "T030",
