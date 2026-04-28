@@ -83,8 +83,8 @@ void PrintUsage() {
         << L"  pathoverlay debug service-write <path> <content>\n"
         << L"  pathoverlay changes\n"
         << L"  pathoverlay driver status\n"
-        << L"  pathoverlay commit\n"
-        << L"  pathoverlay discard\n";
+        << L"  pathoverlay commit --rule <id>\n"
+        << L"  pathoverlay discard --rule <id>\n";
 }
 
 }  // namespace
@@ -132,10 +132,18 @@ int wmain(int argc, wchar_t* argv[]) {
         return 1;
     }
     if (command == L"commit") {
-        return SendRequest(L"commit");
+        if (argc == 4 && std::wstring(argv[2]) == L"--rule") {
+            return SendRequest(L"commit --rule " + std::wstring(argv[3]));
+        }
+        PrintUsage();
+        return 1;
     }
     if (command == L"discard") {
-        return SendRequest(L"discard");
+        if (argc == 4 && std::wstring(argv[2]) == L"--rule") {
+            return SendRequest(L"discard --rule " + std::wstring(argv[3]));
+        }
+        PrintUsage();
+        return 1;
     }
 
     PrintUsage();

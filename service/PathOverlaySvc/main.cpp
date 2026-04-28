@@ -840,9 +840,16 @@ std::wstring ProcessRequest(const std::wstring& request) {
     }
 
     if (request == L"commit" || request == L"discard") {
+        return L"ERROR rule id is required: use --rule <id>";
+    }
+
+    std::wstring operationRuleId;
+    const bool isCommit = TryParseRuleIdCommand(request, L"commit", &operationRuleId);
+    const bool isDiscard = TryParseRuleIdCommand(request, L"discard", &operationRuleId);
+    if (isCommit || isDiscard) {
         pathoverlay::OverlayRule rule;
-        if (!metadata.GetRule(L"default", &rule, &error)) {
-            return L"ERROR " + error;
+        if (!metadata.GetRule(operationRuleId, &rule, &error)) {
+            return L"ERROR rule not found: " + operationRuleId;
         }
 
         const bool restoreEnabled = rule.enabled;
@@ -858,12 +865,12 @@ std::wstring ProcessRequest(const std::wstring& request) {
                 metadata.SetRuleEnabled(rule.id, true, &error);
                 return L"ERROR failed to pause driver rule: " + error;
             }
-            WriteLog(L"rule paused for " + request);
+            WriteLog(L"rule " + rule.id + L" paused for " + (isCommit ? L"commit" : L"discard"));
         }
 
         pathoverlay::OverlayOperations operations(metadata);
         pathoverlay::OperationResult result;
-        if (request == L"commit") {
+        if (isCommit) {
             result = operations.Commit(rule, MakeCommitId());
         } else {
             result = operations.Discard(rule);
@@ -872,17 +879,20 @@ std::wstring ProcessRequest(const std::wstring& request) {
         if (restoreEnabled) {
             std::wstring restoreError;
             if (!metadata.SetRuleEnabled(rule.id, true, &restoreError)) {
-                return L"ERROR " + request + L" completed but failed to restore rule: " + restoreError;
+                return L"ERROR " + std::wstring(isCommit ? L"commit" : L"discard") +
+                    L" completed but failed to restore rule: " + restoreError;
             }
             rule.enabled = true;
             std::vector<pathoverlay::OverlayRule> rules;
             if (!metadata.ListRules(&rules, &restoreError) || !PushDriverRules(rules, &restoreError)) {
-                return L"ERROR " + request + L" completed but failed to restore driver rule: " + restoreError;
+                return L"ERROR " + std::wstring(isCommit ? L"commit" : L"discard") +
+                    L" completed but failed to restore driver rule: " + restoreError;
             }
-            WriteLog(L"rule restored after " + request);
+            WriteLog(L"rule " + rule.id + L" restored after " + (isCommit ? L"commit" : L"discard"));
         }
 
-        return result.success ? L"OK " + request + L" completed" : L"ERROR " + result.message;
+        const std::wstring operationName = isCommit ? L"commit" : L"discard";
+        return result.success ? L"OK " + operationName + L" completed" : L"ERROR " + result.message;
     }
 
     return L"ERROR unknown command";

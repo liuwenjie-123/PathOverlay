@@ -558,6 +558,49 @@ int wmain() {
         std::vector<pathoverlay::ChangeRecord> lockedChanges;
         ok &= Expect(operations.ListChanges(lockedRule.id, &lockedChanges).success && !lockedChanges.empty(), L"failed occupied commit should preserve change metadata");
 
+        const std::wstring multiSourceA = TempPathOverlayDir(L"multi_source_a");
+        const std::wstring multiStoreA = TempPathOverlayDir(L"multi_store_a");
+        const std::wstring multiSourceB = TempPathOverlayDir(L"multi_source_b");
+        const std::wstring multiStoreB = TempPathOverlayDir(L"multi_store_b");
+        EnsureDirectory(multiSourceA);
+        EnsureDirectory(multiStoreA);
+        EnsureDirectory(multiSourceB);
+        EnsureDirectory(multiStoreB);
+        pathoverlay::OverlayRule multiRuleA{L"rule-multi-a", L"multi-a", true, multiSourceA, multiStoreA};
+        pathoverlay::OverlayRule multiRuleB{L"rule-multi-b", L"multi-b", true, multiSourceB, multiStoreB};
+        ok &= Expect(metadata.UpsertRule(multiRuleA, &sqliteError), L"first multi rule should be persisted");
+        ok &= Expect(metadata.UpsertRule(multiRuleB, &sqliteError), L"second multi rule should be persisted");
+
+        const std::wstring multiRealA = multiSourceA + L"\\shared-name.txt";
+        const std::wstring multiRealB = multiSourceB + L"\\shared-name.txt";
+        ok &= Expect(WriteTextFile(multiRealA, "multi-a-base"), L"first multi real file should be created");
+        ok &= Expect(WriteTextFile(multiRealB, "multi-b-base"), L"second multi real file should be created");
+        std::wstring multiShadowA;
+        std::wstring multiShadowB;
+        ok &= Expect(operations.PrepareCopyOnWrite(multiRuleA, multiRealA, &multiShadowA).success,
+                     L"first multi rule shadow should be prepared");
+        ok &= Expect(operations.PrepareCopyOnWrite(multiRuleB, multiRealB, &multiShadowB).success,
+                     L"second multi rule shadow should be prepared");
+        ok &= Expect(WriteTextFile(multiShadowA, "multi-a-overlay"), L"first multi shadow should be writable");
+        ok &= Expect(WriteTextFile(multiShadowB, "multi-b-overlay"), L"second multi shadow should be writable");
+        opResult = operations.Commit(multiRuleA, L"commit-multi-a-001");
+        ok &= Expect(opResult.success, L"commit should succeed for selected multi rule");
+        ok &= Expect(ReadTextFile(multiRealA) == "multi-a-overlay",
+                     L"selected multi rule commit should update its real file");
+        ok &= Expect(ReadTextFile(multiRealB) == "multi-b-base",
+                     L"selected multi rule commit should not update other rule real file");
+        std::vector<pathoverlay::ChangeRecord> multiChangesA;
+        std::vector<pathoverlay::ChangeRecord> multiChangesB;
+        ok &= Expect(operations.ListChanges(multiRuleA.id, &multiChangesA).success && multiChangesA.empty(),
+                     L"selected multi rule commit should clear its changes");
+        ok &= Expect(operations.ListChanges(multiRuleB.id, &multiChangesB).success && !multiChangesB.empty(),
+                     L"selected multi rule commit should preserve other rule changes");
+        ok &= Expect(operations.Discard(multiRuleB).success, L"discard should succeed for selected multi rule");
+        ok &= Expect(ReadTextFile(multiRealB) == "multi-b-base",
+                     L"selected multi rule discard should keep its real file");
+        ok &= Expect(operations.ListChanges(multiRuleB.id, &multiChangesB).success && multiChangesB.empty(),
+                     L"selected multi rule discard should clear its changes");
+
         const std::wstring commitId = L"commit-ops-001";
         opResult = operations.Commit(opsRule, commitId);
         ok &= Expect(opResult.success, L"commit should succeed");

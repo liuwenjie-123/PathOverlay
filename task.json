@@ -586,7 +586,7 @@
     {
       "id": "T026",
       "title": "按 rule id 执行 commit 和 discard",
-      "status": "pending",
+      "status": "done",
       "description": "多规则下 commit 和 discard 必须显式指定 --rule <id>，并且只处理指定规则的 overlay 数据。",
       "deliverables": [
         "pathoverlay commit --rule <id>",
@@ -605,7 +605,8 @@
       "depends_on": [
         "T021",
         "T025"
-      ]
+      ],
+      "notes_ref": "docs/task-notes.md#T026"
     },
     {
       "id": "T027",
