@@ -50,7 +50,7 @@
   </ItemGroup>
   <ItemDefinitionGroup>
     <Link>
-      <AdditionalDependencies>fltLib.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>fltLib.lib;Rstrtmgr.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

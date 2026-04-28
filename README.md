@@ -188,8 +188,8 @@ CLI 示例：
 .\pathoverlay.exe rule add C:\Temp\AnotherSource --store D:\PathOverlayStore\AnotherSource
 .\pathoverlay.exe rule show
 .\pathoverlay.exe changes
-.\pathoverlay.exe commit
-.\pathoverlay.exe discard
+.\pathoverlay.exe commit --rule <id>
+.\pathoverlay.exe discard --rule <id>
 .\pathoverlay.exe rule disable --rule <id>
 .\pathoverlay.exe rule enable --rule <id>
 ```
@@ -249,16 +249,23 @@ Remove-Item C:\Temp\PathOverlaySource\old.txt
 .\pathoverlay.exe changes
 ```
 
-丢弃所有覆盖层变更，不修改真实目录：
+按 rule id 丢弃该规则的覆盖层变更，不修改真实目录：
 
 ```powershell
-.\pathoverlay.exe discard
+.\pathoverlay.exe discard --rule rule-20260427-120000-1234-5678
 ```
 
-应用所有覆盖层变更到真实目录：
+按 rule id 应用该规则的覆盖层变更到真实目录：
 
 ```powershell
-.\pathoverlay.exe commit
+.\pathoverlay.exe commit --rule rule-20260427-120000-1234-5678
+```
+
+如果 commit 或 discard 检测到相关文件被用户进程占用，默认会失败并列出占用进程。确认可以关闭这些非关键用户进程时，显式追加：
+
+```powershell
+.\pathoverlay.exe commit --rule rule-20260427-120000-1234-5678 --confirm-close
+.\pathoverlay.exe discard --rule rule-20260427-120000-1234-5678 --confirm-close
 ```
 
 典型流程：
@@ -270,13 +277,13 @@ Set-Content C:\Temp\PathOverlaySource\a.txt "hello"
 Remove-Item C:\Temp\PathOverlaySource\old.txt
 
 .\pathoverlay.exe changes
-.\pathoverlay.exe commit
+.\pathoverlay.exe commit --rule <returned-rule-id>
 ```
 
 如果不想保留这些变更，把最后一行换成：
 
 ```powershell
-.\pathoverlay.exe discard
+.\pathoverlay.exe discard --rule <returned-rule-id>
 ```
 
 一键卸载服务和驱动：

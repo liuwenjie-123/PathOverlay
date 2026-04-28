@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <fltuser.h>
+#include <RestartManager.h>
 
 #include <algorithm>
 #include <cwctype>
@@ -482,6 +483,19 @@ struct ParsedRuleAdd {
     std::wstring store;
 };
 
+struct ParsedRuleOperation {
+    bool valid = false;
+    std::wstring ruleId;
+    bool confirmClose = false;
+};
+
+struct OccupyingProcess {
+    DWORD processId = 0;
+    std::wstring applicationName;
+    RM_APP_TYPE applicationType = RmUnknownApp;
+    bool protectedProcess = false;
+};
+
 ParsedRuleAdd ParseRuleAddPayload(const std::wstring& payload) {
     constexpr wchar_t kStoreSwitch[] = L" --store ";
     const size_t storeSwitch = payload.rfind(kStoreSwitch);
@@ -506,6 +520,293 @@ bool TryParseRuleIdCommand(
 
     *ruleId = request.substr(prefix.size());
     return !ruleId->empty();
+}
+
+std::vector<std::wstring> SplitWhitespace(const std::wstring& value) {
+    std::vector<std::wstring> tokens;
+    size_t offset = 0;
+    while (offset < value.size()) {
+        while (offset < value.size() && iswspace(value[offset])) {
+            ++offset;
+        }
+        if (offset >= value.size()) {
+            break;
+        }
+        const size_t start = offset;
+        while (offset < value.size() && !iswspace(value[offset])) {
+            ++offset;
+        }
+        tokens.push_back(value.substr(start, offset - start));
+    }
+    return tokens;
+}
+
+ParsedRuleOperation ParseRuleOperation(const std::wstring& request, const std::wstring& command) {
+    ParsedRuleOperation parsed;
+    const std::vector<std::wstring> tokens = SplitWhitespace(request);
+    if (tokens.empty() || tokens[0] != command) {
+        return parsed;
+    }
+
+    for (size_t index = 1; index < tokens.size(); ++index) {
+        if (tokens[index] == L"--rule") {
+            if (index + 1 >= tokens.size() || tokens[index + 1].empty()) {
+                return ParsedRuleOperation{};
+            }
+            parsed.ruleId = tokens[index + 1];
+            ++index;
+            continue;
+        }
+        if (tokens[index] == L"--confirm-close") {
+            parsed.confirmClose = true;
+            continue;
+        }
+        return ParsedRuleOperation{};
+    }
+
+    parsed.valid = !parsed.ruleId.empty();
+    return parsed;
+}
+
+bool IsExistingRegularFile(const std::wstring& path) {
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+void AddUniquePath(std::vector<std::wstring>* paths, const std::wstring& path) {
+    if (path.empty() || !IsExistingRegularFile(path)) {
+        return;
+    }
+    const std::wstring normalized = pathoverlay::NormalizePath(path);
+    for (const auto& existing : *paths) {
+        if (_wcsicmp(existing.c_str(), normalized.c_str()) == 0) {
+            return;
+        }
+    }
+    paths->push_back(normalized);
+}
+
+std::vector<std::wstring> CollectOccupancyResourcePaths(
+    const std::vector<pathoverlay::ChangeRecord>& records,
+    bool isCommit) {
+    std::vector<std::wstring> paths;
+    for (const auto& record : records) {
+        if (isCommit) {
+            AddUniquePath(&paths, record.realPath);
+            AddUniquePath(&paths, record.shadowPath);
+            AddUniquePath(&paths, record.targetPath);
+        } else {
+            AddUniquePath(&paths, record.shadowPath);
+        }
+    }
+    return paths;
+}
+
+std::wstring ApplicationTypeText(RM_APP_TYPE type) {
+    switch (type) {
+    case RmMainWindow:
+        return L"main-window";
+    case RmOtherWindow:
+        return L"other-window";
+    case RmService:
+        return L"service";
+    case RmExplorer:
+        return L"explorer";
+    case RmConsole:
+        return L"console";
+    case RmCritical:
+        return L"critical";
+    default:
+        return L"unknown";
+    }
+}
+
+bool IsProtectedOccupyingProcess(const RM_PROCESS_INFO& process) {
+    const DWORD processId = process.Process.dwProcessId;
+    if (processId <= 4 || processId == GetCurrentProcessId()) {
+        return true;
+    }
+    if (process.ApplicationType == RmCritical || process.ApplicationType == RmService) {
+        return true;
+    }
+
+    const std::wstring name = process.strAppName;
+    return _wcsicmp(name.c_str(), L"System") == 0 ||
+           _wcsicmp(name.c_str(), L"Registry") == 0 ||
+           _wcsicmp(name.c_str(), L"smss.exe") == 0 ||
+           _wcsicmp(name.c_str(), L"csrss.exe") == 0 ||
+           _wcsicmp(name.c_str(), L"wininit.exe") == 0 ||
+           _wcsicmp(name.c_str(), L"services.exe") == 0 ||
+           _wcsicmp(name.c_str(), L"lsass.exe") == 0 ||
+           _wcsicmp(name.c_str(), L"winlogon.exe") == 0 ||
+           _wcsicmp(name.c_str(), L"PathOverlaySvc.exe") == 0;
+}
+
+bool QueryOccupyingProcesses(
+    const std::vector<std::wstring>& paths,
+    std::vector<OccupyingProcess>* processes,
+    std::wstring* error) {
+    processes->clear();
+    if (paths.empty()) {
+        return true;
+    }
+
+    DWORD sessionHandle = 0;
+    wchar_t sessionKey[CCH_RM_SESSION_KEY + 1] = {};
+    DWORD result = RmStartSession(&sessionHandle, 0, sessionKey);
+    if (result != ERROR_SUCCESS) {
+        std::wstringstream stream;
+        stream << L"failed to start Restart Manager session: " << result;
+        *error = stream.str();
+        return false;
+    }
+
+    std::vector<LPCWSTR> pathPointers;
+    pathPointers.reserve(paths.size());
+    for (const auto& path : paths) {
+        pathPointers.push_back(path.c_str());
+    }
+
+    result = RmRegisterResources(
+        sessionHandle,
+        static_cast<UINT>(pathPointers.size()),
+        pathPointers.data(),
+        0,
+        nullptr,
+        0,
+        nullptr);
+    if (result != ERROR_SUCCESS) {
+        RmEndSession(sessionHandle);
+        std::wstringstream stream;
+        stream << L"failed to register resources for occupancy detection: " << result;
+        *error = stream.str();
+        return false;
+    }
+
+    UINT processInfoNeeded = 0;
+    UINT processInfoCount = 0;
+    DWORD rebootReasons = 0;
+    result = RmGetList(sessionHandle, &processInfoNeeded, &processInfoCount, nullptr, &rebootReasons);
+    if (result == ERROR_MORE_DATA && processInfoNeeded > 0) {
+        std::vector<RM_PROCESS_INFO> processInfo(processInfoNeeded);
+        processInfoCount = processInfoNeeded;
+        result = RmGetList(
+            sessionHandle,
+            &processInfoNeeded,
+            &processInfoCount,
+            processInfo.data(),
+            &rebootReasons);
+        if (result == ERROR_SUCCESS) {
+            for (UINT index = 0; index < processInfoCount; ++index) {
+                OccupyingProcess process;
+                process.processId = processInfo[index].Process.dwProcessId;
+                process.applicationName = processInfo[index].strAppName;
+                process.applicationType = processInfo[index].ApplicationType;
+                process.protectedProcess = IsProtectedOccupyingProcess(processInfo[index]);
+                processes->push_back(process);
+            }
+        }
+    }
+
+    RmEndSession(sessionHandle);
+    if (result != ERROR_SUCCESS && result != ERROR_MORE_DATA) {
+        std::wstringstream stream;
+        stream << L"failed to query occupying processes: " << result;
+        *error = stream.str();
+        return false;
+    }
+
+    return true;
+}
+
+std::wstring FormatOccupyingProcesses(const std::vector<OccupyingProcess>& processes) {
+    std::wstringstream output;
+    output << L"occupied files detected";
+    for (const auto& process : processes) {
+        output << L"\n pid=" << process.processId
+               << L" name=" << (process.applicationName.empty() ? L"<unknown>" : process.applicationName)
+               << L" type=" << ApplicationTypeText(process.applicationType);
+        if (process.protectedProcess) {
+            output << L" protected=true";
+        }
+    }
+    return output.str();
+}
+
+bool TerminateOccupyingUserProcesses(
+    const std::vector<OccupyingProcess>& processes,
+    std::wstring* error) {
+    for (const auto& process : processes) {
+        if (process.protectedProcess) {
+            *error = L"refusing to close protected process: pid=" + std::to_wstring(process.processId);
+            return false;
+        }
+    }
+
+    for (const auto& process : processes) {
+
+        HANDLE handle = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, process.processId);
+        if (handle == nullptr) {
+            std::wstringstream stream;
+            stream << L"failed to open process for close: pid=" << process.processId
+                   << L" error=" << GetLastError();
+            *error = stream.str();
+            return false;
+        }
+
+        if (!TerminateProcess(handle, 1)) {
+            const DWORD lastError = GetLastError();
+            CloseHandle(handle);
+            std::wstringstream stream;
+            stream << L"failed to close process: pid=" << process.processId
+                   << L" error=" << lastError;
+            *error = stream.str();
+            return false;
+        }
+        WaitForSingleObject(handle, 3000);
+        CloseHandle(handle);
+    }
+
+    return true;
+}
+
+bool EnsureNoOccupyingProcesses(
+    const std::vector<pathoverlay::ChangeRecord>& records,
+    bool isCommit,
+    bool confirmClose,
+    std::wstring* responseError) {
+    const std::vector<std::wstring> paths = CollectOccupancyResourcePaths(records, isCommit);
+    std::vector<OccupyingProcess> processes;
+    std::wstring error;
+    if (!QueryOccupyingProcesses(paths, &processes, &error)) {
+        *responseError = error;
+        return false;
+    }
+    if (processes.empty()) {
+        return true;
+    }
+    if (!confirmClose) {
+        *responseError = FormatOccupyingProcesses(processes) + L"\nuse --confirm-close to close non-critical user processes";
+        return false;
+    }
+
+    if (!TerminateOccupyingUserProcesses(processes, &error)) {
+        *responseError = error + L"\n" + FormatOccupyingProcesses(processes);
+        return false;
+    }
+
+    Sleep(250);
+    processes.clear();
+    if (!QueryOccupyingProcesses(paths, &processes, &error)) {
+        *responseError = error;
+        return false;
+    }
+    if (!processes.empty()) {
+        *responseError = L"files are still occupied after close attempt\n" + FormatOccupyingProcesses(processes);
+        return false;
+    }
+
+    return true;
 }
 
 std::wstring AppendDriverSyncWarning(std::wstring response, const std::wstring& syncError) {
@@ -819,6 +1120,26 @@ std::wstring ProcessRequest(const std::wstring& request) {
         return L"OK service wrote file";
     }
 
+    if (request.rfind(L"debug prepare-cow --rule ", 0) == 0) {
+        const std::wstring payload = request.substr(25);
+        const size_t separator = payload.find(L' ');
+        if (separator == std::wstring::npos) {
+            return L"ERROR debug prepare-cow requires rule id and path";
+        }
+
+        const std::wstring debugRuleId = payload.substr(0, separator);
+        const std::wstring path = payload.substr(separator + 1);
+        pathoverlay::OverlayRule rule;
+        if (!metadata.GetRule(debugRuleId, &rule, &error)) {
+            return L"ERROR rule not found: " + debugRuleId;
+        }
+
+        pathoverlay::OverlayOperations operations(metadata);
+        std::wstring shadowPath;
+        const pathoverlay::OperationResult result = operations.PrepareCopyOnWrite(rule, path, &shadowPath);
+        return result.success ? L"OK shadow=" + shadowPath : L"ERROR " + result.message;
+    }
+
     if (request == L"changes") {
         std::vector<pathoverlay::ChangeRecord> records;
         if (!metadata.ListChanges(L"default", &records, &error)) {
@@ -843,16 +1164,27 @@ std::wstring ProcessRequest(const std::wstring& request) {
         return L"ERROR rule id is required: use --rule <id>";
     }
 
-    std::wstring operationRuleId;
-    const bool isCommit = TryParseRuleIdCommand(request, L"commit", &operationRuleId);
-    const bool isDiscard = TryParseRuleIdCommand(request, L"discard", &operationRuleId);
+    const ParsedRuleOperation commitOperation = ParseRuleOperation(request, L"commit");
+    const ParsedRuleOperation discardOperation = ParseRuleOperation(request, L"discard");
+    const bool isCommit = commitOperation.valid;
+    const bool isDiscard = discardOperation.valid;
     if (isCommit || isDiscard) {
+        const ParsedRuleOperation operation = isCommit ? commitOperation : discardOperation;
         pathoverlay::OverlayRule rule;
-        if (!metadata.GetRule(operationRuleId, &rule, &error)) {
-            return L"ERROR rule not found: " + operationRuleId;
+        if (!metadata.GetRule(operation.ruleId, &rule, &error)) {
+            return L"ERROR rule not found: " + operation.ruleId;
+        }
+
+        std::vector<pathoverlay::ChangeRecord> records;
+        if (!metadata.ListChanges(rule.id, &records, &error)) {
+            return L"ERROR " + error;
+        }
+        if (!EnsureNoOccupyingProcesses(records, isCommit, operation.confirmClose, &error)) {
+            return L"ERROR " + error;
         }
 
         const bool restoreEnabled = rule.enabled;
+        std::wstring syncWarning;
         if (restoreEnabled) {
             if (!metadata.SetRuleEnabled(rule.id, false, &error)) {
                 return L"ERROR failed to pause rule: " + error;
@@ -861,9 +1193,16 @@ std::wstring ProcessRequest(const std::wstring& request) {
             pathoverlay::OverlayRule pausedRule = rule;
             pausedRule.enabled = false;
             std::vector<pathoverlay::OverlayRule> rules;
-            if (!metadata.ListRules(&rules, &error) || !PushDriverRules(rules, &error)) {
+            if (!metadata.ListRules(&rules, &error)) {
                 metadata.SetRuleEnabled(rule.id, true, &error);
                 return L"ERROR failed to pause driver rule: " + error;
+            }
+            if (IsDriverPortConnected() && !PushDriverRules(rules, &error)) {
+                metadata.SetRuleEnabled(rule.id, true, &error);
+                return L"ERROR failed to pause driver rule: " + error;
+            }
+            if (!IsDriverPortConnected()) {
+                syncWarning = L"driver sync skipped: driver not connected";
             }
             WriteLog(L"rule " + rule.id + L" paused for " + (isCommit ? L"commit" : L"discard"));
         }
@@ -884,15 +1223,24 @@ std::wstring ProcessRequest(const std::wstring& request) {
             }
             rule.enabled = true;
             std::vector<pathoverlay::OverlayRule> rules;
-            if (!metadata.ListRules(&rules, &restoreError) || !PushDriverRules(rules, &restoreError)) {
+            if (!metadata.ListRules(&rules, &restoreError)) {
                 return L"ERROR " + std::wstring(isCommit ? L"commit" : L"discard") +
                     L" completed but failed to restore driver rule: " + restoreError;
+            }
+            if (IsDriverPortConnected() && !PushDriverRules(rules, &restoreError)) {
+                return L"ERROR " + std::wstring(isCommit ? L"commit" : L"discard") +
+                    L" completed but failed to restore driver rule: " + restoreError;
+            }
+            if (!IsDriverPortConnected()) {
+                syncWarning = L"driver sync skipped: driver not connected";
             }
             WriteLog(L"rule " + rule.id + L" restored after " + (isCommit ? L"commit" : L"discard"));
         }
 
         const std::wstring operationName = isCommit ? L"commit" : L"discard";
-        return result.success ? L"OK " + operationName + L" completed" : L"ERROR " + result.message;
+        return result.success
+            ? AppendDriverSyncWarning(L"OK " + operationName + L" completed", syncWarning)
+            : L"ERROR " + result.message;
     }
 
     return L"ERROR unknown command";

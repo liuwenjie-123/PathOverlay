@@ -611,7 +611,7 @@
     {
       "id": "T027",
       "title": "实现占用检测与确认关闭流程",
-      "status": "pending",
+      "status": "done",
       "description": "执行 commit/discard 前检测占用文件和相关进程，默认只报告；只有显式确认参数存在时才关闭相关用户进程。",
       "deliverables": [
         "占用文件检测",
@@ -629,7 +629,8 @@
       ],
       "depends_on": [
         "T026"
-      ]
+      ],
+      "notes_ref": "docs/task-notes.md#T027"
     },
     {
       "id": "T028",

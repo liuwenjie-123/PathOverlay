@@ -159,3 +159,9 @@
 ## T026 - 按 rule id 执行 commit 和 discard
 
 2026-04-28：已将 CLI commit/discard 改为必须显式传入 `--rule <id>`，服务端同步拒绝缺少 rule id 的 commit/discard 请求，并按指定 rule id 查询规则、暂停该规则、同步驱动规则缓存、执行 commit 或 discard、再恢复该规则；其他规则的启用状态和 pending changes 不参与本次操作。用户态测试新增双规则场景，验证 commit 只写回指定规则并保留其他规则变更，discard 只清理指定规则且不修改真实文件。验证通过：`scripts/build.ps1`、`scripts/test.ps1`。
+
+<a id="T027"></a>
+
+## T027 - 实现占用检测与确认关闭流程
+
+2026-04-28：已在服务端 commit/discard 执行前使用 Windows Restart Manager 查询本规则 pending changes 涉及的现有文件占用进程。默认行为改为发现占用即返回 `ERROR occupied files detected`，输出 pid、进程名、应用类型和 protected 标记，并保留 change 元数据与 shadow 数据；CLI 新增 `--confirm-close`，确认后服务只会关闭非关键用户进程，遇到 system/critical/service/PathOverlaySvc 等受保护进程会整体拒绝关闭，不会先部分终止。关闭后会复查占用，确认清空后再暂停规则、执行 commit/discard 并恢复规则；SkipDriver 环境下 driver sync 缺失会降级为 warning，避免阻塞用户态服务集成验证。新增 `debug prepare-cow --rule <id> <path>` 用于服务集成测试制造 pending change。README 和安装脚本示例已更新为 `commit|discard --rule <id>` 与 `--confirm-close` 语义。验证通过：`scripts/build.ps1`、`scripts/test.ps1`、`x64/Debug/install-start.ps1 -SkipDriver -ResetData`，以及 SkipDriver 服务集成脚本覆盖 commit/discard 默认占用失败、占用进程列表输出、失败保留 shadow、`--confirm-close` 关闭持有文件句柄的用户进程后继续完成操作、discard 不修改真实文件；已卸载测试服务。
