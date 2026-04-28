@@ -5,6 +5,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <sstream>
+#include <thread>
 
 namespace pathoverlay {
 namespace {
@@ -80,6 +81,34 @@ bool TryOpenExclusive(const std::wstring& path, DWORD desiredAccess, std::wstrin
 
 std::wstring BackupRoot(const OverlayRule& rule, const std::wstring& commitId) {
     return NormalizePath(rule.store.empty() ? DefaultStoreRoot() : rule.store) + L"\\backups\\" + commitId;
+}
+
+std::wstring SafePathSegment(std::wstring value) {
+    if (value.empty()) {
+        return L"default";
+    }
+    for (wchar_t& ch : value) {
+        if (!(std::iswalnum(ch) || ch == L'-' || ch == L'_')) {
+            ch = L'_';
+        }
+    }
+    return value;
+}
+
+std::wstring DiscardCleanupRoot(const OverlayRule& rule) {
+    std::wstringstream stream;
+    stream << L".discard-cleanup-"
+           << SafePathSegment(rule.id)
+           << L"-" << GetCurrentProcessId()
+           << L"-" << GetTickCount64();
+    return NormalizePath(rule.store.empty() ? DefaultStoreRoot() : rule.store) + L"\\" + stream.str();
+}
+
+void RemoveAllDetached(const std::wstring& path) {
+    std::thread([path]() {
+        std::error_code ignored;
+        fs::remove_all(path, ignored);
+    }).detach();
 }
 
 std::wstring BackupPathFor(const OverlayRule& rule, const std::wstring& commitId, const std::wstring& realPath) {
@@ -915,12 +944,30 @@ OperationResult OverlayOperations::Discard(const OverlayRule& rule) {
     std::wstring error;
     std::error_code errorCode;
     const std::wstring driveRoot = NormalizePath(rule.store.empty() ? DefaultStoreRoot() : rule.store) + L"\\drive";
-    fs::remove_all(driveRoot, errorCode);
-    if (errorCode) {
-        return Fail(L"failed to remove shadow data");
+    std::wstring cleanupRoot;
+    if (fs::exists(driveRoot, errorCode)) {
+        if (errorCode) {
+            return Fail(L"failed to inspect shadow data");
+        }
+
+        cleanupRoot = DiscardCleanupRoot(rule);
+        fs::rename(driveRoot, cleanupRoot, errorCode);
+        if (errorCode) {
+            return Fail(L"failed to isolate shadow data for background cleanup");
+        }
+    } else if (errorCode) {
+        return Fail(L"failed to inspect shadow data");
     }
+
     if (!metadata_.DeleteChangesForRule(rule.id, &error)) {
+        if (!cleanupRoot.empty()) {
+            std::error_code rollbackError;
+            fs::rename(cleanupRoot, driveRoot, rollbackError);
+        }
         return Fail(error);
+    }
+    if (!cleanupRoot.empty()) {
+        RemoveAllDetached(cleanupRoot);
     }
     return Ok();
 }

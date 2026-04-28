@@ -783,6 +783,28 @@
         "T021"
       ],
       "notes_ref": "docs/task-notes.md#T034"
+    },
+    {
+      "id": "T035",
+      "title": "将 discard shadow 删除改为后台清理",
+      "status": "done",
+      "description": "优化 discard 的响应路径：先快速移走当前 rule 的 shadow drive 并清理 metadata，让 source 访问尽快恢复真实视图，再后台删除较大的 shadow 数据。",
+      "deliverables": [
+        "discard 快速隔离旧 shadow drive",
+        "后台删除 discard 清理目录",
+        "用户态测试覆盖 discard 后旧 shadow 不再命中"
+      ],
+      "test_criteria": [
+        "discard 成功后 changes 立即清空",
+        "discard 成功后旧 store\\drive shadow 路径不再存在",
+        "discard 不修改真实 source 文件或目录",
+        "task.json 可被 JSON 解析",
+        "scripts/build.ps1 和 scripts/test.ps1 通过"
+      ],
+      "depends_on": [
+        "T026"
+      ],
+      "notes_ref": "docs/task-notes.md#T035"
     }
   ]
 }

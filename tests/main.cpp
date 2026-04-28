@@ -497,6 +497,8 @@ int wmain() {
         ok &= Expect(operations.RecordRename(discardRule, discardRenameSource, discardRenameTarget).success,
                      L"discard rename should be recorded");
         ok &= Expect(operations.Discard(discardRule).success, L"discard should succeed");
+        ok &= Expect(GetFileAttributesW(discardShadow.c_str()) == INVALID_FILE_ATTRIBUTES,
+                     L"discard should immediately remove old shadow from active drive path");
         ok &= Expect(ReadTextFile(discardReal) == "keep", L"discard should not modify real file");
         ok &= Expect(ReadTextFile(discardRenameSource) == "discard-rename",
                      L"discard should keep renamed source real file");
@@ -520,6 +522,8 @@ int wmain() {
         ok &= Expect(operations.RecordRename(discardRule, discardDirectoryRenameSource, discardDirectoryRenameTarget).success,
                      L"discard directory rename should be recorded");
         ok &= Expect(operations.Discard(discardRule).success, L"directory discard should succeed");
+        ok &= Expect(GetFileAttributesW(discardDirectoryShadow.c_str()) == INVALID_FILE_ATTRIBUTES,
+                     L"directory discard should immediately remove old shadow from active drive path");
         ok &= Expect(GetFileAttributesW(discardDirectoryReal.c_str()) == INVALID_FILE_ATTRIBUTES,
                      L"discard should not create real directory");
         ok &= Expect(IsDirectory(discardDeletedDirectoryReal),

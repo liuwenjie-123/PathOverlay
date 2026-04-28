@@ -274,6 +274,8 @@ Remove-Item C:\Temp\PathOverlaySource\old.txt
 .\pathoverlay.exe discard --rule rule-20260427-120000-1234-5678
 ```
 
+`discard` 成功后会立即清空该 rule 的 pending changes，并先把旧 shadow 数据移出当前 `store\drive`，避免后续访问继续命中旧覆盖内容；较大的 shadow 目录会在后台继续删除。
+
 按 rule id 应用该规则的覆盖层变更到真实目录：
 
 ```powershell

@@ -196,3 +196,11 @@
 2026-04-28：任务开始，目标是修正 `rule add --store` 可接受已有普通文件路径的问题；期望已有 store 路径必须是目录，不存在的 store 路径仍按目录语义允许后续创建。
 
 2026-04-28：已在公共规则校验中新增已有 store 路径属性检查，若路径存在但不是目录则返回 `ERROR store path must be a directory`；不存在的 store 路径仍允许，已有目录仍允许。用户态测试覆盖 missing store 允许、已有普通文件 store 拒绝；README 已补充 `--store` 目录要求和故障排查。验证通过：`task.json` JSON 解析、`git diff --check`、`scripts/build.ps1`、`scripts/test.ps1`，以及 Debug SkipDriver 服务集成手工验证普通文件 store 拒绝、目录 store 和不存在 store 可添加规则；验证后已卸载 Debug 服务。
+
+<a id="T035"></a>
+
+## T035 - 将 discard shadow 删除改为后台清理
+
+2026-04-28：任务开始，目标是降低 discard 后立刻访问 source 目录时的卡顿。计划将同步 `remove_all(store\drive)` 改为先快速 rename 到 store 下的 cleanup 目录，使驱动不再命中旧 shadow，再清理 metadata 并在后台删除 cleanup 目录。
+
+2026-04-28：已将 `OverlayOperations::Discard` 改为先把 `store\drive` 快速 rename 到 `.discard-cleanup-<rule>-<pid>-<tick>`，再删除该 rule 的 changes；metadata 删除成功后用后台 detached 线程递归删除 cleanup 目录。若隔离 rename 失败则 discard 失败并保留 metadata，避免旧 shadow 仍在 active drive 路径时误报成功；若 metadata 删除失败会尝试把 cleanup 目录 rename 回 `store\drive`。README 已说明 discard 会先移出旧 shadow 并后台删除大目录；用户态测试新增 discard 后旧 active shadow 路径立即不可见的断言。验证通过：`task.json` JSON 解析、`git diff --check`、`scripts/build.ps1`、`scripts/test.ps1`，以及 Debug SkipDriver 服务集成验证 discard 后 changes 立即清空、旧 `store\drive` shadow 路径不可见、真实文件未修改；验证后已卸载 Debug 服务。
