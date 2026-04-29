@@ -988,7 +988,7 @@
     {
       "id": "T044",
       "title": "更新稳定化文档与发布检查清单",
-      "status": "pending",
+      "status": "done",
       "description": "把稳定化阶段新增命令、诊断流程、恢复限制和测试流程写入用户文档，并形成发布前检查清单。",
       "deliverables": [
         "README 稳定化命令说明",
@@ -1006,7 +1006,8 @@
       "depends_on": [
         "T040",
         "T043"
-      ]
+      ],
+      "notes_ref": "docs/task-notes.md#T044"
     }
   ]
 }

@@ -2,7 +2,7 @@
 
 PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driver + 用户态服务 + CLI` 实现指定本地目录的 copy-on-write 重定向。它的目标是在 commit 前保护真实目录：写入进入隔离目录，删除记录为 tombstone，用户可以选择提交或丢弃变更。
 
-当前仓库已经完成 vNext 原型任务，不是生产级沙箱。设计背景见 `PathOverlay_Design.md`，MVP 历史边界见 `docs/Design_Review_and_Revisions.md` 和 `docs/MVP_Development_Plan.md`；当前能力、测试状态和后续限制以本 README、`docs/Testing.md`、`docs/vNext_Metadata_and_Compatibility.md`、`docs/Stabilization_and_Recovery_Plan.md` 和 `task.json` 为准。
+当前仓库已经完成 vNext 原型任务，不是生产级沙箱。设计背景见 `PathOverlay_Design.md`，MVP 历史边界见 `docs/Design_Review_and_Revisions.md` 和 `docs/MVP_Development_Plan.md`；当前能力、测试状态和后续限制以本 README、`docs/Testing.md`、`docs/vNext_Metadata_and_Compatibility.md`、`docs/Stabilization_and_Recovery_Plan.md`、`docs/Release_Checklist.md` 和 `task.json` 为准。
 
 ## 当前能力
 
@@ -17,7 +17,8 @@ PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driv
 - 支持按 rule id 执行 `commit`，写回变更，写回或删除前创建备份。
 - 支持按 rule id 执行 `discard`，丢弃隔离数据，不修改真实文件。
 - commit/discard 前检测占用文件；默认失败并列出占用进程，显式 `--confirm-close` 时可关闭非关键用户进程后继续。
-- 支持只读 `status` 和 `doctor` 诊断命令，查看服务、驱动、规则、pending changes、operation 和 cleanup 状态。
+- 支持只读 `status`、`doctor` 和 `diagnostics collect` 诊断命令，查看服务、驱动、规则、pending changes、operation、cleanup 和日志状态。
+- 支持 `changes --rule <id>`、`commit --dry-run --rule <id>` 和 `discard --dry-run --rule <id>`，在提交或丢弃前预览影响范围。
 - 服务和 store 路径排除重定向，避免递归影响。
 
 ## 已知限制
@@ -29,8 +30,8 @@ PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driv
 - 不支持 per-rule include/exclude pattern、排除路径和按进程规则。
 - 不支持注册表虚拟化，也不提供完整系统盘保护或安全沙箱边界。
 - 不覆盖硬链接、alternate data streams、完整 ACL 继承和复杂安全语义。
-- 当前 vNext 原型尚未完成全部稳定化能力：`diagnostics collect`、dry-run 和备份恢复能力按 `docs/Stabilization_and_Recovery_Plan.md` 分阶段实现。
-- 第一阶段恢复能力只做保守诊断和可重试状态记录，不自动 repair、restore 或宣称完整 rollback。
+- 备份索引、`backup list` 和手动 `restore` 仍处于设计阶段；当前实现只在 commit 写回前创建备份，不提供完整事务回滚。
+- 第一阶段恢复能力只做保守诊断、可重试状态记录和 cleanup 续删，不自动 repair、restore 或宣称完整 rollback。
 - 真实驱动测试需要 Windows 测试机、管理员权限、test-signing 和签名证书。
 
 ## 环境要求
@@ -314,6 +315,27 @@ Remove-Item C:\Temp\PathOverlaySource\old.txt
 .\pathoverlay.exe changes
 .\pathoverlay.exe commit --rule <returned-rule-id>
 ```
+
+## 稳定化与诊断命令
+
+稳定化阶段的完整设计边界见 `docs/Stabilization_and_Recovery_Plan.md`，发布前人工核对见 `docs/Release_Checklist.md`。这些命令默认都不读取或打包真实 source 文件内容，也不会复制 shadow 文件内容。
+
+```powershell
+.\pathoverlay.exe status
+.\pathoverlay.exe doctor
+.\pathoverlay.exe diagnostics collect --output C:\Temp\PathOverlayDiagnostics
+.\pathoverlay.exe changes --rule <id>
+.\pathoverlay.exe commit --dry-run --rule <id>
+.\pathoverlay.exe discard --dry-run --rule <id>
+```
+
+`status` 是轻量只读状态摘要，输出服务连接、驱动连接、规则数量、启用规则数量、pending changes 数量、cleanup 队列计数和最近 operation 摘要。它不扫描完整 shadow 目录树。
+
+`doctor` 是只读一致性检查，报告 failed/recoverable/running operation、failed cleanup、缺失 cleanup 路径、缺失 rule source、非法 store 类型和缺失 shadow 等问题。第一阶段没有自动 `--fix`，不会修改 metadata、shadow 或真实 source。
+
+`diagnostics collect [--output <目录>]` 会生成诊断目录，包含 `rule-show.txt`、`changes.txt`、`status.txt`、`doctor.txt`、`driver-status.txt`、SCM 状态、manifest 和服务日志副本；服务不可用时也会记录失败输出，便于离线排查。诊断包可能包含本机路径、rule id、store 路径和错误消息，分享前应按需要脱敏。
+
+dry-run 命令用于提交或丢弃前确认范围：`commit --dry-run --rule <id>` 列出将写入、删除、rename、备份的路径和 blocker；`discard --dry-run --rule <id>` 列出将清理的 change 数量、active shadow 根和 metadata 范围。dry-run 不暂停 rule、不创建 operation、不创建备份、不移动 shadow、不删除 metadata，也不修改真实 source。
 
 如果不想保留这些变更，把最后一行换成：
 

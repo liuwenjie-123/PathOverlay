@@ -34,6 +34,48 @@ copies `sqlite3.dll` beside the test executable when needed, and runs
 The user-mode tests use directories under `%TEMP%\PathOverlayTests` and clean
 that data before and after the run.
 
+## Stabilization Verification
+
+Stabilization coverage is split between user-mode tests, service diagnostics,
+and the driver E2E package.
+
+User-mode tests must cover:
+
+- interrupted commit/discard operation recovery metadata;
+- persistent discard cleanup queue processing and failed cleanup reporting;
+- `status` and `doctor` summaries without modifying metadata, shadow, or real
+  source files;
+- `diagnostics collect` smoke behavior when the service is unavailable;
+- `changes --rule`, `commit --dry-run --rule`, and `discard --dry-run --rule`
+  without mutating real source, shadow, or metadata;
+- long paths, Unicode paths, case variants, 8.3 short paths when available,
+  read-only attributes, last-write timestamps, and empty nested directories.
+
+For a local service diagnostic check without loading the driver, build Debug and
+start the service with the packaged installer:
+
+```powershell
+.\scripts\build.ps1
+cd .\x64\Debug
+.\install-start.ps1 -SkipDriver -ResetData
+.\pathoverlay.exe status
+.\pathoverlay.exe doctor
+.\pathoverlay.exe diagnostics collect --output "$env:TEMP\PathOverlayDiagnostics"
+.\uninstall.ps1 -RemoveData
+```
+
+Expected diagnostic behavior:
+
+- `status` reports service connectivity, driver connectivity, rule counts,
+  pending changes, cleanup counts, and the most recent operation summary;
+- `doctor` reports `no issues` on a clean store, or emits `WARN`/`ERROR` lines
+  for recoverable operations, failed cleanup, missing source, invalid store, or
+  missing shadow data;
+- `diagnostics collect` creates a directory containing command output files,
+  SCM status, a manifest, and the service log when present;
+- diagnostic collection must not copy real source file content or shadow file
+  content into the package.
+
 ## Cleanup
 
 To remove local user-mode and test-machine temporary data:
@@ -116,3 +158,10 @@ The script writes a transcript under `test-machine-package\logs\` and performs
 service and driver cleanup unless `-SkipCleanup` is used.
 On failure, it also runs `pathoverlay diagnostics collect --output <logs path>`
 and prints the diagnostics directory path.
+
+For stabilization acceptance, inspect a failed E2E run before cleanup if
+`-SkipCleanup` was used, or inspect the printed diagnostics directory otherwise.
+The diagnostics directory should include `rule-show.txt`, `changes.txt`,
+`status.txt`, `doctor.txt`, `driver-status.txt`, SCM state files,
+`manifest.txt`, and `PathOverlaySvc.log` when the service log exists. The
+transcript should show the failing check context and the diagnostics path.

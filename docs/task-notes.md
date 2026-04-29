@@ -248,3 +248,11 @@
 2026-04-29 复查测试机日志 `test-machine-package/PathOverlay-Test-20260429-141218.log`：T043 失败点为 `compatibility changes include long unicode path`，前置长 Unicode 路径写入 shadow 已通过，服务日志也显示 `changes record[6] realPath_len=209`，说明 metadata 中完整保存了路径；实际失败来自 CLI/pipe 输出边界截断到 `source\unicode-`。已修正 CLI 输出统一走 `WriteConsoleW` 或 UTF-8 `WriteFile`，并保留 UTF-8 转换函数的缓冲区越界修复。验证通过：`scripts/build.ps1`、`scripts/test.ps1`、`scripts/Test-PathOverlay.ps1` 语法检查、SkipDriver 服务集成冒烟验证 PowerShell 捕获的 `changes --rule` 包含完整 `unicode-路径\...\数据-file.txt`、`scripts/package-test-machine.ps1 -Configuration Release`、`git diff --check`。当前启动项仍未显示 `testsigning Yes`，真实驱动 E2E 需在测试机复跑。
 
 2026-04-29 再次复查测试机日志 `test-machine-package/PathOverlay-Test-20260429-142328.log`：`changes --rule` 已不再截断，但 Windows PowerShell 5.1 仍把 UTF-8 native 输出按默认代码页解码，同时脚本源码中的中文路径字面量也有无 BOM 读取风险，导致测试期望路径和 CLI 输出路径不相等。已在测试脚本入口设置 `[Console]::OutputEncoding` 与 `$OutputEncoding` 为 UTF-8，并将 T043 的 `路径`、`数据-file.txt` 改为 `[char]` 构造，避免源码编码影响。验证通过：`scripts/Test-PathOverlay.ps1` 语法检查、`scripts/test.ps1`、SkipDriver 服务集成冒烟验证 PowerShell 捕获的 `changes --rule` 可匹配 `[char]` 构造的中文路径、`scripts/package-test-machine.ps1 -Configuration Release`。新测试机包中 `Test-PathOverlay.ps1` SHA256=`A368BABEF3495BC28290C4261E2A541E6DF3F98C4CCE140EC626D06A6DC4F460`，`pathoverlay.exe` SHA256=`090397C6F75F5701FB556404017CF6049DB5FDC49E91DE4B141750F7F0C48885`，`PathOverlayFlt.sys` SHA256=`D933336D0C2BE33477C0C6BE37B76BEC62038D187A68BCCEA08DCA0B0BCDBA32`。真实驱动 E2E 仍需在启用 test-signing 的测试机复跑。
+
+<a id="T044"></a>
+
+## T044 - 更新稳定化文档与发布检查清单
+
+2026-04-29：任务开始。目标是把稳定化阶段新增命令、诊断流程、恢复限制和测试流程补充到用户文档，并新增发布前检查清单。T036 到 T043 均已有 notes 记录；T043 的真实驱动 E2E 仍依赖启用 test-signing 的测试机复跑，T044 文档会保留该环境要求。
+
+2026-04-29：已更新 README 稳定化说明，集中描述 `status`、`doctor`、`diagnostics collect`、`changes --rule`、commit/discard dry-run、诊断包内容和第一阶段不自动 repair/restore/rollback 的恢复边界。`docs/Testing.md` 已补充稳定化验证流程、兼容性测试覆盖范围、服务诊断检查步骤和测试机失败诊断包验收方式。新增 `docs/Release_Checklist.md`，覆盖发布前 scope 检查、Debug/Release 构建、用户态测试、服务诊断、测试机驱动 E2E、清理和最终 review。验证通过：`task.json` JSON 解析、`git diff --check`、关键字检查覆盖 T044 验收项、`scripts/test.ps1`。
