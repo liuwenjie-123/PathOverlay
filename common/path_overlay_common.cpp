@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <filesystem>
 #include <sstream>
 #include <vector>
 
@@ -286,6 +287,87 @@ std::optional<std::wstring> MapRealPathToShadowPath(const OverlayRule& rule, con
     const std::wstring real = NormalizePath(realPath);
     const std::wstring store = NormalizePath(rule.store.empty() ? DefaultStoreRoot() : rule.store);
     return JoinPath(JoinPath(store, L"drive"), PathWithoutDriveColon(real));
+}
+
+bool IsReparsePointPath(const std::wstring& path) {
+    const DWORD attributes = GetFileAttributesW(NormalizePath(path).c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+}
+
+std::optional<std::wstring> FindFirstReparsePointInRulePath(
+    const OverlayRule& rule,
+    const std::wstring& realPath) {
+    const std::wstring source = NormalizePath(rule.source);
+    const std::wstring path = NormalizePath(realPath);
+    if (!SameOrChildPath(source, path) || ToLower(source) == ToLower(path)) {
+        return std::nullopt;
+    }
+
+    std::wstring cursor = source;
+    size_t offset = source.size();
+    while (offset < path.size()) {
+        if (IsSlash(path[offset])) {
+            ++offset;
+            continue;
+        }
+
+        const size_t next = path.find(L'\\', offset);
+        const std::wstring component = next == std::wstring::npos
+            ? path.substr(offset)
+            : path.substr(offset, next - offset);
+        cursor = JoinPath(cursor, component);
+        if (IsReparsePointPath(cursor)) {
+            return cursor;
+        }
+        if (next == std::wstring::npos) {
+            break;
+        }
+        offset = next + 1;
+    }
+
+    return std::nullopt;
+}
+
+std::vector<std::wstring> ListReparsePointsUnderRule(
+    const OverlayRule& rule,
+    size_t maxEntries,
+    std::wstring* error) {
+    std::vector<std::wstring> result;
+    const std::wstring source = NormalizePath(rule.source);
+    if (source.empty() || maxEntries == 0 || GetFileAttributesW(source.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        return result;
+    }
+
+    std::error_code errorCode;
+    std::filesystem::recursive_directory_iterator iterator(
+        std::filesystem::path(source),
+        std::filesystem::directory_options::skip_permission_denied,
+        errorCode);
+    const std::filesystem::recursive_directory_iterator end;
+    if (errorCode) {
+        if (error != nullptr) {
+            *error = L"failed to enumerate rule source for reparse diagnostics";
+        }
+        return result;
+    }
+
+    while (iterator != end && result.size() < maxEntries) {
+        const std::wstring path = NormalizePath(iterator->path().wstring());
+        if (IsReparsePointPath(path)) {
+            result.push_back(path);
+            iterator.disable_recursion_pending();
+        }
+
+        iterator.increment(errorCode);
+        if (errorCode) {
+            if (error != nullptr) {
+                *error = L"failed to enumerate rule source for reparse diagnostics";
+            }
+            break;
+        }
+    }
+
+    return result;
 }
 
 }  // namespace pathoverlay

@@ -138,6 +138,20 @@ std::wstring ShortPathOrEmpty(const std::wstring& path) {
     return std::wstring(buffer.data(), length);
 }
 
+bool CreateDirectorySymlinkForTest(const std::wstring& linkPath, const std::wstring& targetPath) {
+    constexpr DWORD kAllowUnprivilegedCreate = 0x2;
+    if (CreateSymbolicLinkW(
+            linkPath.c_str(),
+            targetPath.c_str(),
+            SYMBOLIC_LINK_FLAG_DIRECTORY | kAllowUnprivilegedCreate)) {
+        return true;
+    }
+    return CreateSymbolicLinkW(
+        linkPath.c_str(),
+        targetPath.c_str(),
+        SYMBOLIC_LINK_FLAG_DIRECTORY) != FALSE;
+}
+
 std::wstring BackupPathForTest(const std::wstring& backupRoot, const std::wstring& realPath) {
     std::wstring normalized = pathoverlay::NormalizePath(realPath);
     if (normalized.size() >= 2 && normalized[1] == L':') {
@@ -517,6 +531,57 @@ int wmain() {
         SetReadOnly(readonlyShadow, false);
         ok &= Expect(operations.Discard(compatibilityRule).success,
                      L"compatibility discard should clear readonly metadata");
+
+        const std::wstring reparseTarget = TempPathOverlayDir(L"reparse-target");
+        std::filesystem::create_directories(reparseTarget, cleanupError);
+        ok &= Expect(!cleanupError, L"reparse target directory should be created");
+        cleanupError.clear();
+        const std::wstring reparseTargetFile = reparseTarget + L"\\outside.txt";
+        ok &= Expect(WriteTextFile(reparseTargetFile, "outside-base"),
+                     L"reparse target file should be created");
+        const std::wstring reparseLink = compatibilitySource + L"\\link-out";
+        if (CreateDirectorySymlinkForTest(reparseLink, reparseTarget)) {
+            ok &= Expect(pathoverlay::IsReparsePointPath(reparseLink),
+                         L"source child symlink should be detected as reparse point");
+            ok &= Expect(pathoverlay::FindFirstReparsePointInRulePath(
+                             compatibilityRule,
+                             reparseLink + L"\\outside.txt").has_value(),
+                         L"reparse subtree child should be detected as passthrough");
+
+            std::wstring compatibilityRootShadow;
+            opResult = operations.PrepareDirectoryView(compatibilityRule, compatibilitySource, &compatibilityRootShadow);
+            ok &= Expect(opResult.success, L"directory view should succeed with reparse child");
+            const auto reparseShadow = pathoverlay::MapRealPathToShadowPath(compatibilityRule, reparseLink);
+            ok &= Expect(reparseShadow.has_value(), L"reparse link should map to shadow path for diagnostics");
+            ok &= Expect(GetFileAttributesW(reparseShadow->c_str()) == INVALID_FILE_ATTRIBUTES,
+                         L"directory view should not copy reparse child into shadow");
+
+            std::wstring ignoredShadow;
+            opResult = operations.PrepareCopyOnWrite(compatibilityRule, reparseLink + L"\\outside.txt", &ignoredShadow);
+            ok &= Expect(!opResult.success, L"copy-on-write should reject reparse passthrough subtree");
+            opResult = operations.RecordDelete(compatibilityRule, reparseLink + L"\\outside.txt");
+            ok &= Expect(!opResult.success, L"delete record should reject reparse passthrough subtree");
+            opResult = operations.RecordRename(
+                compatibilityRule,
+                reparseLink + L"\\outside.txt",
+                compatibilitySource + L"\\renamed-outside.txt");
+            ok &= Expect(!opResult.success, L"rename record should reject reparse passthrough subtree");
+
+            std::vector<pathoverlay::ChangeRecord> reparseChanges;
+            ok &= Expect(operations.ListChanges(compatibilityRule.id, &reparseChanges).success,
+                         L"reparse compatibility changes should be queryable");
+            bool hasReparseChange = false;
+            for (const auto& change : reparseChanges) {
+                if (change.realPath.find(L"link-out") != std::wstring::npos) {
+                    hasReparseChange = true;
+                }
+            }
+            ok &= Expect(!hasReparseChange, L"reparse passthrough subtree should not create metadata");
+            RemoveDirectoryW(reparseLink.c_str());
+        } else {
+            std::wcerr << L"Skipping reparse symlink compatibility checks; CreateSymbolicLinkW failed with "
+                       << GetLastError() << L"\n";
+        }
 
         const std::wstring emptyRoot = compatibilitySource + L"\\empty-root";
         const auto emptyShadow = pathoverlay::MapRealPathToShadowPath(compatibilityRule, emptyRoot);

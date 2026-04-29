@@ -207,6 +207,10 @@ OperationResult PersistChange(
 }
 
 OperationResult CopyFileWithParents(const std::wstring& source, const std::wstring& target) {
+    if (IsReparsePointPath(source)) {
+        return Fail(L"reparse passthrough path is outside overlay scope");
+    }
+
     std::error_code errorCode;
     fs::create_directories(FilesystemPath(fs::path(target).parent_path().wstring()), errorCode);
     if (errorCode) {
@@ -220,7 +224,13 @@ OperationResult CopyFileWithParents(const std::wstring& source, const std::wstri
     return Ok();
 }
 
+OperationResult CopyMissingDirectoryTree(const std::wstring& source, const std::wstring& target);
+
 OperationResult CopyPathWithParents(const std::wstring& source, const std::wstring& target) {
+    if (IsReparsePointPath(source)) {
+        return Fail(L"reparse passthrough path is outside overlay scope");
+    }
+
     std::error_code errorCode;
     if (fs::is_directory(FilesystemPath(source), errorCode)) {
         fs::create_directories(FilesystemPath(fs::path(target).parent_path().wstring()), errorCode);
@@ -228,15 +238,7 @@ OperationResult CopyPathWithParents(const std::wstring& source, const std::wstri
             return FailFilesystem(L"failed to create target directory", fs::path(target).parent_path().wstring(), errorCode);
         }
 
-        fs::copy(
-            FilesystemPath(source),
-            FilesystemPath(target),
-            fs::copy_options::recursive | fs::copy_options::overwrite_existing,
-            errorCode);
-        if (errorCode) {
-            return Fail(L"failed to copy directory");
-        }
-        return Ok();
+        return CopyMissingDirectoryTree(source, target);
     }
     if (errorCode) {
         return Fail(L"failed to read source path type");
@@ -246,22 +248,37 @@ OperationResult CopyPathWithParents(const std::wstring& source, const std::wstri
 }
 
 OperationResult CopyMissingDirectoryTree(const std::wstring& source, const std::wstring& target) {
+    if (IsReparsePointPath(source)) {
+        return Ok();
+    }
+
     std::error_code errorCode;
     fs::create_directories(FilesystemPath(target), errorCode);
     if (errorCode) {
         return FailFilesystem(L"failed to create target directory", target, errorCode);
     }
 
-    for (const fs::directory_entry& entry : fs::recursive_directory_iterator(FilesystemPath(source), errorCode)) {
+    fs::recursive_directory_iterator iterator(FilesystemPath(source), errorCode);
+    const fs::recursive_directory_iterator end;
+    for (; iterator != end; iterator.increment(errorCode)) {
         if (errorCode) {
             return Fail(L"failed to enumerate source directory tree");
         }
+        const fs::directory_entry& entry = *iterator;
 
         const fs::path relative = fs::relative(entry.path(), FilesystemPath(source), errorCode);
         if (errorCode) {
             return Fail(L"failed to compute relative directory path");
         }
         const fs::path targetPath = fs::path(target) / relative;
+
+        if (IsReparsePointPath(entry.path().wstring())) {
+            if (entry.is_directory(errorCode)) {
+                iterator.disable_recursion_pending();
+            }
+            errorCode.clear();
+            continue;
+        }
 
         if (entry.is_directory(errorCode)) {
             fs::create_directories(FilesystemPath(targetPath.wstring()), errorCode);
@@ -293,6 +310,10 @@ OperationResult CopyMissingDirectoryTree(const std::wstring& source, const std::
 }
 
 OperationResult CopyMissingPath(const std::wstring& source, const std::wstring& target) {
+    if (IsReparsePointPath(source)) {
+        return Ok();
+    }
+
     std::error_code errorCode;
     if (!fs::exists(FilesystemPath(source), errorCode)) {
         return Ok();
@@ -511,6 +532,9 @@ OperationResult OverlayOperations::PrepareCopyOnWrite(const OverlayRule& rule, c
     if (!mapped.has_value()) {
         return Fail(L"real path is outside rule or rule is invalid");
     }
+    if (FindFirstReparsePointInRulePath(rule, realPath).has_value()) {
+        return Fail(L"reparse passthrough path is outside overlay scope");
+    }
     *shadowPath = *mapped;
 
     const std::wstring normalizedReal = NormalizePath(realPath);
@@ -554,6 +578,9 @@ OperationResult OverlayOperations::PrepareDirectoryView(const OverlayRule& rule,
     const auto mapped = MapRealPathToShadowPath(rule, realPath);
     if (!mapped.has_value()) {
         return Fail(L"real path is outside rule or rule is invalid");
+    }
+    if (FindFirstReparsePointInRulePath(rule, realPath).has_value()) {
+        return Fail(L"reparse passthrough path is outside overlay scope");
     }
     *shadowPath = *mapped;
 
@@ -606,6 +633,9 @@ OperationResult OverlayOperations::PrepareDirectoryView(const OverlayRule& rule,
         if (IsDirectTombstoneChild(records, normalizedReal, realChild)) {
             continue;
         }
+        if (IsReparsePointPath(realChild)) {
+            continue;
+        }
 
         const auto mappedChild = MapRealPathToShadowPath(rule, realChild);
         if (!mappedChild.has_value()) {
@@ -646,6 +676,9 @@ OperationResult OverlayOperations::PrepareRenamedTargetPath(
     }
 
     const std::wstring normalizedReal = NormalizePath(realPath);
+    if (FindFirstReparsePointInRulePath(rule, normalizedReal).has_value()) {
+        return Ok();
+    }
     std::vector<ChangeRecord> records;
     std::wstring error;
     if (!metadata_.ListChanges(rule.id, &records, &error)) {
@@ -694,6 +727,9 @@ OperationResult OverlayOperations::RecordCreatedFile(const OverlayRule& rule, co
     if (!mapped.has_value()) {
         return Fail(L"real path is outside rule or rule is invalid");
     }
+    if (FindFirstReparsePointInRulePath(rule, realPath).has_value()) {
+        return Fail(L"reparse passthrough path is outside overlay scope");
+    }
 
     std::error_code errorCode;
     const std::wstring shadowParent = fs::path(*mapped).parent_path().wstring();
@@ -709,6 +745,9 @@ OperationResult OverlayOperations::RecordDelete(const OverlayRule& rule, const s
     const auto mapped = MapRealPathToShadowPath(rule, realPath);
     if (!mapped.has_value()) {
         return Fail(L"real path is outside rule or rule is invalid");
+    }
+    if (FindFirstReparsePointInRulePath(rule, realPath).has_value()) {
+        return Fail(L"reparse passthrough path is outside overlay scope");
     }
 
     std::error_code errorCode;
@@ -731,6 +770,10 @@ OperationResult OverlayOperations::RecordRename(
     const auto targetShadow = MapRealPathToShadowPath(rule, targetRealPath);
     if (!sourceShadow.has_value() || !targetShadow.has_value()) {
         return Fail(L"rename source and target must be inside the same rule");
+    }
+    if (FindFirstReparsePointInRulePath(rule, sourceRealPath).has_value() ||
+        FindFirstReparsePointInRulePath(rule, targetRealPath).has_value()) {
+        return Fail(L"reparse passthrough path is outside overlay scope");
     }
 
     const std::wstring normalizedSource = NormalizePath(sourceRealPath);

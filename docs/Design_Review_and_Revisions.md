@@ -104,5 +104,6 @@ vNext 仍不支持：
 - 注册表虚拟化。
 - 整盘覆盖、系统盘根目录覆盖或完整系统盘保护。
 - 跨 rule、跨卷、目标已存在或 tombstone 后的 rename/move。
-- 硬链接、NTFS alternate data streams、完整 reparse point 语义和完整 ACL 继承。
+- 完整 reparse point 语义；source 根 reparse point 仍被拒绝，source 内 symlink、junction、mount point 等 reparse subtree 采用 passthrough 策略，PathOverlay 不跟随、不接管、不递归处理，访问由 Windows 默认处理。
+- 硬链接、NTFS alternate data streams 和完整 ACL 继承。
 - 把 PathOverlay 作为安全沙箱使用。

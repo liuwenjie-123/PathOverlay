@@ -50,7 +50,8 @@ Confirm the tests cover:
 - `status`, `doctor`, diagnostics collection smoke behavior, `changes --rule`,
   and commit/discard dry-run behavior;
 - long paths, Unicode paths, case variants, 8.3 short paths when available,
-  read-only attributes, timestamps, and empty nested directories.
+  read-only attributes, timestamps, empty nested directories, and source-child
+  reparse passthrough.
 
 ## Service Diagnostics
 
@@ -107,6 +108,8 @@ Confirm the E2E run covers:
   rename/move, commit, discard, backup creation, and cleanup;
 - rule-scoped `changes`, commit/discard dry-run, and occupied-file detection;
 - compatibility paths and attributes listed in `docs/Testing.md`;
+- source-child junction or symlink passthrough does not create changes, shadow
+  content, commit work, or discard work;
 - failure diagnostics path printing when an assertion fails.
 
 ## Cleanup

@@ -29,7 +29,9 @@ copies `sqlite3.dll` beside the test executable when needed, and runs
   failure, backup creation, and metadata retention after failed commit;
 - compatibility cases for long and Unicode paths, case variants, 8.3 short paths
   when available, read-only attributes, last-write timestamps, and empty nested
-  directories.
+  directories;
+- source-child reparse passthrough, where symlink or junction subtrees are not
+  copied into shadow and do not create overlay metadata.
 
 The user-mode tests use directories under `%TEMP%\PathOverlayTests` and clean
 that data before and after the run.
@@ -49,7 +51,8 @@ User-mode tests must cover:
 - `changes --rule`, `commit --dry-run --rule`, and `discard --dry-run --rule`
   without mutating real source, shadow, or metadata;
 - long paths, Unicode paths, case variants, 8.3 short paths when available,
-  read-only attributes, last-write timestamps, and empty nested directories.
+  read-only attributes, last-write timestamps, empty nested directories, and
+  source-child reparse passthrough.
 
 For a local service diagnostic check without loading the driver, build Debug and
 start the service with the packaged installer:
@@ -142,7 +145,7 @@ port, installs and starts `PathOverlaySvc`, verifies CLI IPC, and exercises:
 - commit/discard by rule id;
 - path and attribute compatibility for long and Unicode paths, case variants,
   8.3 short paths when available, read-only attributes, last-write timestamps,
-  and empty nested directories;
+  empty nested directories, and source-child junction passthrough;
 - occupied-file detection before commit/discard.
 
 The run is accepted only when the transcript ends with:

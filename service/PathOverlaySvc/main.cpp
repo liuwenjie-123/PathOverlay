@@ -362,6 +362,15 @@ PATHOVERLAY_SERVICE_RESPONSE ProcessDriverRequest(const PATHOVERLAY_SERVICE_REQU
 
     pathoverlay::OverlayOperations operations(metadata);
     if (request.Command == PathOverlayServiceCommandQueryPath) {
+        const auto reparsePath = pathoverlay::FindFirstReparsePointInRulePath(rule, realPath);
+        if (reparsePath.has_value()) {
+            response.PathState = PathOverlayPathStatePassthrough;
+            WriteLog(
+                std::wstring(L"driver request: query rule=") + rule.id + L" path=" + realPath +
+                L" state=passthrough reparse=" + *reparsePath);
+            return response;
+        }
+
         response.PathState = IsTombstoned(metadata, rule.id, realPath, &error)
             ? PathOverlayPathStateTombstone
             : PathOverlayPathStateNormal;
@@ -1330,6 +1339,20 @@ std::wstring BuildDoctorResponse(pathoverlay::MetadataStore& metadata) {
             ++errors;
             output << L"\nERROR rule store is not directory rule=" << rule.id
                    << L" store=" << rule.store;
+        }
+
+        std::wstring reparseError;
+        const std::vector<std::wstring> reparsePoints =
+            pathoverlay::ListReparsePointsUnderRule(rule, 32, &reparseError);
+        if (!reparseError.empty()) {
+            ++warnings;
+            output << L"\nWARN reparse diagnostic incomplete rule=" << rule.id
+                   << L" error=" << reparseError;
+        }
+        for (const auto& reparsePath : reparsePoints) {
+            ++warnings;
+            output << L"\nWARN reparse passthrough rule=" << rule.id
+                   << L" path=" << reparsePath;
         }
 
         std::vector<pathoverlay::ChangeRecord> records;

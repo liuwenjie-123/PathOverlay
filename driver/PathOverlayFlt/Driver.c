@@ -801,6 +801,9 @@ PathOverlayShouldDeferQueryOpen(
         shouldDefer = TRUE;
         goto Exit;
     }
+    if (NT_SUCCESS(status) && serviceResponse.PathState == PathOverlayPathStatePassthrough) {
+        goto Exit;
+    }
     if (NT_SUCCESS(status) && serviceResponse.ShadowNtPath[0] != UNICODE_NULL) {
         UNICODE_STRING responseShadowPath;
 
@@ -1049,6 +1052,11 @@ PathOverlayPreCreate(
         FltSetCallbackDataDirty(Data);
         return FLT_PREOP_COMPLETE;
     }
+    if (NT_SUCCESS(status) && serviceResponse.PathState == PathOverlayPathStatePassthrough) {
+        FltReleaseFileNameInformation(nameInfo);
+        ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
     if (NT_SUCCESS(status) && serviceResponse.ShadowNtPath[0] != UNICODE_NULL) {
         UNICODE_STRING responseShadowPath;
 
@@ -1245,6 +1253,45 @@ PathOverlayPreSetInformation(
             }
         }
 
+        {
+            PATHOVERLAY_SERVICE_RESPONSE queryResponse = { 0 };
+            status = PathOverlaySendServiceRequest(
+                PathOverlayServiceCommandQueryPath,
+                rule.RuleId,
+                &renameSourceRealPath,
+                NULL,
+                &queryResponse);
+            if (NT_SUCCESS(status) && queryResponse.PathState == PathOverlayPathStatePassthrough) {
+                if (renameSourceRealPath.Buffer != nameInfo->Name.Buffer && renameSourceRealPath.Buffer != NULL) {
+                    ExFreePoolWithTag(renameSourceRealPath.Buffer, 'OPrP');
+                }
+                if (renameTargetRealPath.Buffer != destinationInfo->Name.Buffer && renameTargetRealPath.Buffer != NULL) {
+                    ExFreePoolWithTag(renameTargetRealPath.Buffer, 'OPrP');
+                }
+                FltReleaseFileNameInformation(destinationInfo);
+                FltReleaseFileNameInformation(nameInfo);
+                return FLT_PREOP_SUCCESS_NO_CALLBACK;
+            }
+
+            status = PathOverlaySendServiceRequest(
+                PathOverlayServiceCommandQueryPath,
+                rule.RuleId,
+                &renameTargetRealPath,
+                NULL,
+                &queryResponse);
+            if (NT_SUCCESS(status) && queryResponse.PathState == PathOverlayPathStatePassthrough) {
+                if (renameSourceRealPath.Buffer != nameInfo->Name.Buffer && renameSourceRealPath.Buffer != NULL) {
+                    ExFreePoolWithTag(renameSourceRealPath.Buffer, 'OPrP');
+                }
+                if (renameTargetRealPath.Buffer != destinationInfo->Name.Buffer && renameTargetRealPath.Buffer != NULL) {
+                    ExFreePoolWithTag(renameTargetRealPath.Buffer, 'OPrP');
+                }
+                FltReleaseFileNameInformation(destinationInfo);
+                FltReleaseFileNameInformation(nameInfo);
+                return FLT_PREOP_SUCCESS_NO_CALLBACK;
+            }
+        }
+
         status = PathOverlaySendServiceRequest(
             PathOverlayServiceCommandRecordRename,
             rule.RuleId,
@@ -1297,6 +1344,23 @@ PathOverlayPreSetInformation(
             Data->IoStatus.Information = 0;
             FltSetCallbackDataDirty(Data);
             return FLT_PREOP_COMPLETE;
+        }
+    }
+
+    {
+        PATHOVERLAY_SERVICE_RESPONSE queryResponse = { 0 };
+        status = PathOverlaySendServiceRequest(
+            PathOverlayServiceCommandQueryPath,
+            rule.RuleId,
+            &deleteRealPath,
+            NULL,
+            &queryResponse);
+        if (NT_SUCCESS(status) && queryResponse.PathState == PathOverlayPathStatePassthrough) {
+            if (deleteRealPath.Buffer != nameInfo->Name.Buffer && deleteRealPath.Buffer != NULL) {
+                ExFreePoolWithTag(deleteRealPath.Buffer, 'OPrP');
+            }
+            FltReleaseFileNameInformation(nameInfo);
+            return FLT_PREOP_SUCCESS_NO_CALLBACK;
         }
     }
 

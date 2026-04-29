@@ -24,7 +24,8 @@ typedef enum PATHOVERLAY_SERVICE_COMMAND {
 
 typedef enum PATHOVERLAY_PATH_STATE {
     PathOverlayPathStateNormal = 0,
-    PathOverlayPathStateTombstone = 1
+    PathOverlayPathStateTombstone = 1,
+    PathOverlayPathStatePassthrough = 2
 } PATHOVERLAY_PATH_STATE;
 
 typedef struct PATHOVERLAY_DRIVER_RULE_MESSAGE {

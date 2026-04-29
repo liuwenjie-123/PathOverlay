@@ -256,3 +256,27 @@
 2026-04-29：任务开始。目标是把稳定化阶段新增命令、诊断流程、恢复限制和测试流程补充到用户文档，并新增发布前检查清单。T036 到 T043 均已有 notes 记录；T043 的真实驱动 E2E 仍依赖启用 test-signing 的测试机复跑，T044 文档会保留该环境要求。
 
 2026-04-29：已更新 README 稳定化说明，集中描述 `status`、`doctor`、`diagnostics collect`、`changes --rule`、commit/discard dry-run、诊断包内容和第一阶段不自动 repair/restore/rollback 的恢复边界。`docs/Testing.md` 已补充稳定化验证流程、兼容性测试覆盖范围、服务诊断检查步骤和测试机失败诊断包验收方式。新增 `docs/Release_Checklist.md`，覆盖发布前 scope 检查、Debug/Release 构建、用户态测试、服务诊断、测试机驱动 E2E、清理和最终 review。验证通过：`task.json` JSON 解析、`git diff --check`、关键字检查覆盖 T044 验收项、`scripts/test.ps1`。
+
+<a id="T045"></a>
+
+## T045 - 设计 reparse point passthrough 策略
+
+2026-04-29：已明确 source 内部 symlink、junction、mount point 等 reparse subtree 的首版策略：source 根本身仍作为 reparse point 被 rule add 拒绝；source 内 reparse subtree 不由 PathOverlay 跟随、接管或递归处理，访问这些路径时完全直通 Windows 默认行为，因此写入 link target 不受 commit/discard 隔离保护。README 和 `docs/Design_Review_and_Revisions.md` 已补充该限制和风险边界。验证通过：`task.json` JSON 解析。
+
+<a id="T046"></a>
+
+## T046 - 实现服务层 reparse 防递归与 doctor 提示
+
+2026-04-29：已在 common 增加 reparse 检测辅助函数，服务层和用户态测试复用同一判断。`PrepareDirectoryView` 会跳过 source 内 reparse child；rename 懒物化、copy-on-write、delete、rename 记录遇到 reparse subtree 会返回 `reparse passthrough path is outside overlay scope`，避免写入 shadow 或 metadata；递归复制、backup 和 commit 写回使用跳过 reparse entry 的目录复制路径，避免进入 junction/symlink target。`doctor` 新增 `WARN reparse passthrough`，只读列出 source 内 reparse entry。验证通过：`scripts/build.ps1`、`scripts/test.ps1`、SkipDriver 服务集成验证 `doctor` 对 source 内 junction 输出 `reparse passthrough`。
+
+<a id="T047"></a>
+
+## T047 - 实现驱动 reparse subtree 完全直通
+
+2026-04-29：协议新增 `PathOverlayPathStatePassthrough`。服务端 `QueryPath` 在发现请求路径位于 source 内 reparse subtree 时返回 passthrough；驱动 `PreCreate`、QueryOpen/NetworkQueryOpen、delete 和 rename 链路收到 passthrough 后不执行 COW、不重定向、不记录 tombstone 或 rename，让 Windows 默认处理真实路径。测试机 E2E 脚本新增 source 内 junction 场景，验证 junction 写入直通 target、shadow 不创建 junction subtree、changes 不包含 junction 路径、doctor 输出 passthrough。验证通过：`scripts/build.ps1`、`scripts/build.ps1 -Configuration Release`、`scripts/package-test-machine.ps1 -Configuration Release`、`scripts/Test-PathOverlay.ps1` 语法检查。当前启动项未显示 `testsigning Yes`，本机会话无法加载测试签名驱动执行 `test-machine-package/Run-PathOverlay-Test.cmd`，真实驱动 E2E 需在启用 test-signing 的测试机复跑。
+
+<a id="T048"></a>
+
+## T048 - 更新 reparse 兼容性测试与发布文档
+
+2026-04-29：用户态测试新增 source-child directory symlink 场景，覆盖 reparse subtree 检测、目录视图不复制到 shadow、copy-on-write/delete/rename 不接管、metadata 不记录该 subtree；测试机脚本新增 source-child junction passthrough 场景。`docs/Testing.md` 和 `docs/Release_Checklist.md` 已加入 reparse passthrough 验收项。验证通过：`task.json` JSON 解析、`git diff --check`、`scripts/build.ps1`、`scripts/test.ps1`、`scripts/build.ps1 -Configuration Release`、`scripts/test.ps1 -Configuration Release`、`scripts/package-test-machine.ps1 -Configuration Release`。

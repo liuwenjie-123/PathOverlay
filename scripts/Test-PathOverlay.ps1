@@ -796,6 +796,7 @@ function Test-PathAndAttributeCompatibilityDriverBehavior {
     Write-Step "Testing T043 path and attribute compatibility"
     $testRoot = Join-Path $env:TEMP ("PathOverlayCompat-" + [guid]::NewGuid().ToString("N"))
     $source = Join-Path $testRoot "source"
+    $junction = $null
     New-Item -ItemType Directory -Path $source -Force | Out-Null
 
     try {
@@ -859,9 +860,26 @@ function Test-PathAndAttributeCompatibilityDriverBehavior {
         Write-Check "empty nested directory did not pre-create real source" (-not (Test-Path -LiteralPath (Join-Path $source "empty-root"))) "source=$source"
         Invoke-Cli @("rule", "enable", "--rule", $rule.Id) "Failed to re-enable compatibility rule." | Out-Null
 
+        $reparseTarget = Join-Path $testRoot "reparse-target"
+        New-Item -ItemType Directory -Path $reparseTarget -Force | Out-Null
+        $junction = Join-Path $source "junction-out"
+        $mklinkOutput = cmd.exe /d /c "mklink /J ""$junction"" ""$reparseTarget""" 2>&1
+        Write-Check "source child junction is created" ((Test-Path -LiteralPath $junction) -and ((Get-Item -LiteralPath $junction -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) $mklinkOutput
+        $junctionFile = Join-Path $junction "outside.txt"
+        Set-Content -LiteralPath $junctionFile -Value "passthrough-write" -Encoding ASCII
+        $junctionShadow = ConvertTo-ShadowPath $rule.Store $junction
+        Write-Check "junction write is passthrough to target" ((Get-Content -LiteralPath (Join-Path $reparseTarget "outside.txt") -Raw) -match "passthrough-write") "target=$reparseTarget"
+        Write-Check "junction subtree is not copied to shadow" (-not (Test-Path -LiteralPath $junctionShadow)) "shadow=$junctionShadow"
+        $doctorOutput = Invoke-Cli @("doctor") "Failed to run doctor for reparse compatibility."
+        Write-Check "doctor reports reparse passthrough" ($doctorOutput -match "reparse passthrough" -and $doctorOutput -match [regex]::Escape($junction)) $doctorOutput
+
         $changes = Invoke-Cli @("changes", "--rule", $rule.Id) "Failed to query compatibility changes."
         Write-Check "compatibility changes include long unicode path" (Test-ChangesContainsRule $changes $rule.Id $source $rule.Store "modified" $longUnicodeFile) $changes
+        Write-Check "compatibility changes exclude junction passthrough" ($changes -notmatch [regex]::Escape("junction-out")) $changes
     } finally {
+        if ($junction -and (Test-Path -LiteralPath $junction)) {
+            cmd.exe /d /c "rmdir ""$junction""" | Out-Null
+        }
         try {
             $ruleShow = Invoke-Cli @("rule", "show") "Failed to show rules during compatibility cleanup."
             foreach ($rule in (Parse-Rules $ruleShow)) {

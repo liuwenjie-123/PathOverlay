@@ -25,6 +25,7 @@ PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driv
 
 - 多规则 source 不能相同或互相包含，任一 source 和任一 store 不能互相嵌套。
 - 不支持整盘覆盖、盘符根目录、UNC 路径、网络路径和 reparse point 作为 source。
+- source 内部的 symlink、junction、mount point 等 reparse subtree 采用 passthrough 策略：PathOverlay 不跟随、不接管、不递归复制、不纳入 commit/discard；访问这些路径时由 Windows 默认处理，写入 link target 不受覆盖层隔离保护。
 - source 和 store 不能互相嵌套。
 - rename/move 只支持同一 rule 内、同一卷内、目标不存在的文件或目录；跨 rule、跨卷、目标已存在、tombstone 后 rename 会保守失败。
 - 不支持 per-rule include/exclude pattern、排除路径和按进程规则。
@@ -331,7 +332,7 @@ Remove-Item C:\Temp\PathOverlaySource\old.txt
 
 `status` 是轻量只读状态摘要，输出服务连接、驱动连接、规则数量、启用规则数量、pending changes 数量、cleanup 队列计数和最近 operation 摘要。它不扫描完整 shadow 目录树。
 
-`doctor` 是只读一致性检查，报告 failed/recoverable/running operation、failed cleanup、缺失 cleanup 路径、缺失 rule source、非法 store 类型和缺失 shadow 等问题。第一阶段没有自动 `--fix`，不会修改 metadata、shadow 或真实 source。
+`doctor` 是只读一致性检查，报告 failed/recoverable/running operation、failed cleanup、缺失 cleanup 路径、缺失 rule source、非法 store 类型、缺失 shadow 和 source 内 reparse passthrough 路径等问题。第一阶段没有自动 `--fix`，不会修改 metadata、shadow 或真实 source。
 
 `diagnostics collect [--output <目录>]` 会生成诊断目录，包含 `rule-show.txt`、`changes.txt`、`status.txt`、`doctor.txt`、`driver-status.txt`、SCM 状态、manifest 和服务日志副本；服务不可用时也会记录失败输出，便于离线排查。诊断包可能包含本机路径、rule id、store 路径和错误消息，分享前应按需要脱敏。
 

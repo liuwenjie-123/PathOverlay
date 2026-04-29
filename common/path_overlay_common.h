@@ -50,5 +50,13 @@ RuleValidationResult ValidateOverlayRuleSet(
     const OverlayRule& candidate);
 RuleValidationResult ValidateRealPathInRule(const OverlayRule& rule, const std::wstring& realPath);
 std::optional<std::wstring> MapRealPathToShadowPath(const OverlayRule& rule, const std::wstring& realPath);
+bool IsReparsePointPath(const std::wstring& path);
+std::optional<std::wstring> FindFirstReparsePointInRulePath(
+    const OverlayRule& rule,
+    const std::wstring& realPath);
+std::vector<std::wstring> ListReparsePointsUnderRule(
+    const OverlayRule& rule,
+    size_t maxEntries,
+    std::wstring* error);
 
 }  // namespace pathoverlay
