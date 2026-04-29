@@ -74,10 +74,13 @@ PathOverlayResolveQueryShadowPath(
     );
 
 static NTSTATUS
-PathOverlayQueryNetworkOpenInformation(
+PathOverlayQueryPathInformation(
     _In_ PFLT_INSTANCE Instance,
     _In_ PCUNICODE_STRING NtPath,
-    _Out_ PFILE_NETWORK_OPEN_INFORMATION NetworkInformation
+    _Out_writes_bytes_(Length) PVOID FileInformation,
+    _In_ ULONG Length,
+    _In_ FILE_INFORMATION_CLASS FileInformationClass,
+    _Out_opt_ PULONG LengthReturned
     );
 
 static NTSTATUS
@@ -905,24 +908,34 @@ Exit:
 }
 
 static NTSTATUS
-PathOverlayQueryNetworkOpenInformation(
+PathOverlayQueryPathInformation(
     _In_ PFLT_INSTANCE Instance,
     _In_ PCUNICODE_STRING NtPath,
-    _Out_ PFILE_NETWORK_OPEN_INFORMATION NetworkInformation
+    _Out_writes_bytes_(Length) PVOID FileInformation,
+    _In_ ULONG Length,
+    _In_ FILE_INFORMATION_CLASS FileInformationClass,
+    _Out_opt_ PULONG LengthReturned
     )
 {
     OBJECT_ATTRIBUTES attributes;
     IO_STATUS_BLOCK ioStatus = { 0 };
     HANDLE fileHandle = NULL;
     PFILE_OBJECT fileObject = NULL;
-    ULONG lengthReturned = 0;
+    ULONG localLengthReturned = 0;
     NTSTATUS status;
 
     if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
         return STATUS_INVALID_DEVICE_STATE;
     }
 
-    RtlZeroMemory(NetworkInformation, sizeof(*NetworkInformation));
+    if (FileInformation == NULL || Length == 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (LengthReturned != NULL) {
+        *LengthReturned = 0;
+    }
+    RtlZeroMemory(FileInformation, Length);
     InitializeObjectAttributes(
         &attributes,
         (PUNICODE_STRING)NtPath,
@@ -953,10 +966,13 @@ PathOverlayQueryNetworkOpenInformation(
     status = FltQueryInformationFile(
         Instance,
         fileObject,
-        NetworkInformation,
-        sizeof(*NetworkInformation),
-        FileNetworkOpenInformation,
-        &lengthReturned);
+        FileInformation,
+        Length,
+        FileInformationClass,
+        &localLengthReturned);
+    if (NT_SUCCESS(status) && LengthReturned != NULL) {
+        *LengthReturned = localLengthReturned;
+    }
 
 Exit:
     if (fileObject != NULL) {
@@ -1551,6 +1567,7 @@ PathOverlayPreNetworkQueryOpen(
     NTSTATUS status;
     UNICODE_STRING shadowPath = { 0 };
     BOOLEAN tombstone = FALSE;
+    ULONG lengthReturned = 0;
 
     *CompletionContext = NULL;
 
@@ -1562,14 +1579,18 @@ PathOverlayPreNetworkQueryOpen(
         return FLT_PREOP_COMPLETE;
     }
     if (NT_SUCCESS(status) && shadowPath.Buffer != NULL) {
-        status = PathOverlayQueryNetworkOpenInformation(
+        status = PathOverlayQueryPathInformation(
             FltObjects->Instance,
             &shadowPath,
-            Data->Iopb->Parameters.NetworkQueryOpen.NetworkInformation);
+            Data->Iopb->Parameters.NetworkQueryOpen.NetworkInformation,
+            sizeof(FILE_NETWORK_OPEN_INFORMATION),
+            FileNetworkOpenInformation,
+            &lengthReturned);
         ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
         if (NT_SUCCESS(status)) {
             Data->IoStatus.Status = STATUS_SUCCESS;
-            Data->IoStatus.Information = sizeof(FILE_NETWORK_OPEN_INFORMATION);
+            Data->IoStatus.Information =
+                lengthReturned != 0 ? lengthReturned : sizeof(FILE_NETWORK_OPEN_INFORMATION);
             FltSetCallbackDataDirty(Data);
             return FLT_PREOP_COMPLETE;
         }
@@ -1586,10 +1607,41 @@ PathOverlayPreQueryOpen(
     _Flt_CompletionContext_Outptr_ PVOID* CompletionContext
     )
 {
-    UNREFERENCED_PARAMETER(FltObjects);
+    NTSTATUS status;
+    UNICODE_STRING shadowPath = { 0 };
+    BOOLEAN tombstone = FALSE;
+    ULONG lengthReturned = 0;
+
     *CompletionContext = NULL;
 
-    if (PathOverlayShouldDeferQueryOpen(Data)) {
+    status = PathOverlayResolveQueryShadowPath(Data, &shadowPath, &tombstone);
+    if (tombstone) {
+        Data->IoStatus.Status = STATUS_OBJECT_NAME_NOT_FOUND;
+        Data->IoStatus.Information = 0;
+        FltSetCallbackDataDirty(Data);
+        return FLT_PREOP_COMPLETE;
+    }
+    if (NT_SUCCESS(status) && shadowPath.Buffer != NULL) {
+        if (Data->Iopb->Parameters.QueryOpen.Length == NULL) {
+            ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
+            return FLT_PREOP_DISALLOW_FSFILTER_IO;
+        }
+
+        status = PathOverlayQueryPathInformation(
+            FltObjects->Instance,
+            &shadowPath,
+            Data->Iopb->Parameters.QueryOpen.FileInformation,
+            *Data->Iopb->Parameters.QueryOpen.Length,
+            Data->Iopb->Parameters.QueryOpen.FileInformationClass,
+            &lengthReturned);
+        ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
+        if (NT_SUCCESS(status)) {
+            *Data->Iopb->Parameters.QueryOpen.Length = lengthReturned;
+            Data->IoStatus.Status = STATUS_SUCCESS;
+            Data->IoStatus.Information = lengthReturned;
+            FltSetCallbackDataDirty(Data);
+            return FLT_PREOP_COMPLETE;
+        }
         return FLT_PREOP_DISALLOW_FSFILTER_IO;
     }
 

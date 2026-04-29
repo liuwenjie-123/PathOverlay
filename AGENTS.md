@@ -1,6 +1,6 @@
 # Repository Guidelines for Codex
 
-本文件面向 Codex 和其他自动化开发代理。普通读者、新贡献者和操作者应优先阅读 `README.md`；测试机、驱动 E2E 和清理细节见 `docs/Testing.md`；任务状态以 `task.json` 为准。
+本文件面向 Codex 和其他自动化开发代理。普通读者、新贡献者和操作者应优先阅读 `README.md`；测试机、驱动 E2E 和清理细节见 `docs/Testing.md`；当前任务状态以 `task.json` 为准，历史完成任务按 `task.json` 的 `archive` 字段读取归档。
 
 ## 文档入口
 
@@ -9,8 +9,10 @@
 - `PathOverlay_Design.md`：原始设计说明。
 - `docs/Design_Review_and_Revisions.md`：设计修订和 MVP 边界。
 - `docs/MVP_Development_Plan.md`：MVP 开发计划。
-- `task.json`：任务列表、状态、交付物、验收标准和 notes 引用。
-- `docs/task-notes.md`：任务执行过程中的长 notes；`task.json` 只保留 `notes_ref`。
+- `task.json`：当前任务列表、状态、交付物、验收标准、notes 引用和历史归档引用。
+- `docs/task-notes.md`：活跃和近期任务的长 notes；`task.json` 只保留 `notes_ref`。
+- `docs/task-archive.json`：已完成历史任务详情归档，当前归档范围见 `task.json` 的 `archive` 字段。
+- `docs/task-notes-archive.md`：已完成历史任务 notes 归档。
 
 ## Project Structure
 
@@ -37,7 +39,7 @@ Keep driver, service, CLI, and shared common logic separated. Put shared protoco
 7. 不要回退用户已有改动。修改前先读取相关文件，按现有结构小范围变更。
 8. 不要把长篇执行记录直接写入 `task.json` 的 `notes` 字段；新增或更新长 notes 时写入 `docs/task-notes.md`，并让任务使用 `notes_ref` 指向对应章节。
 9. 构建、测试、安装和驱动操作命令不要在本文件重复维护，更新时应同步检查 `README.md` 和 `docs/Testing.md`。
-10. 为降低上下文消耗，读取任务状态或 notes 时优先定位目标片段，例如使用 `Select-String`、`rg` 或等效命令读取目标任务和对应 notes 章节；避免为小范围状态更新完整读取 `task.json` 或 `docs/task-notes.md`。
+10. 为降低上下文消耗，读取任务状态或 notes 时优先定位目标片段，例如使用 `Select-String`、`rg` 或等效命令读取目标任务和对应 notes 章节；避免为小范围状态更新完整读取 `task.json` 或 `docs/task-notes.md`。需要历史任务时再读取 `docs/task-archive.json` 或 `docs/task-notes-archive.md`。
 
 ## Coding Style
 
