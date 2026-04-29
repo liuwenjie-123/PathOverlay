@@ -236,3 +236,7 @@
 ## T041 - 增加 rule 级 changes 过滤与 dry-run
 
 2026-04-29：已新增 `pathoverlay changes --rule <id>`，服务端按指定 rule id 输出 pending changes，缺失 rule 会返回错误；无 `--rule` 时保留全量按 rule 分组输出。CLI 和服务端新增 `commit --dry-run --rule <id>` 与 `discard --dry-run --rule <id>`；dry-run 在创建 operation 记录、暂停 rule、写真实 source、移动 shadow 或清理 metadata 之前返回。commit dry-run 输出 write/delete/rename、backup root、预估 backup path，以及占用、真实文件冲突、缺失 shadow、rename target 已存在等 blocker；discard dry-run 输出将清理的 change 数量、active shadow 根、metadata scope 和 source unchanged 范围。测试机 E2E 脚本在按 rule commit/discard 场景中覆盖 `changes --rule` 和 dry-run 不修改真实文件、shadow 或 metadata。README 已补充命令示例和语义。验证通过：`scripts/build.ps1`、`scripts/test.ps1`、`scripts/Test-PathOverlay.ps1` 语法检查、`git diff --check`，以及 Debug `install-start.ps1 -SkipDriver -ResetData` 后手工服务集成验证 `changes --rule`、`commit --dry-run --rule`、`discard --dry-run --rule`；验证后已卸载服务并清理数据。
+
+## T042 - 设计备份索引与手动恢复能力
+
+2026-04-29：已在 `docs/Stabilization_and_Recovery_Plan.md` 细化 backup index 与手动恢复边界：新增 `backup_sets_v1` 和 `backup_items_v1` 建议结构，定义 backup set/item 的状态、路径、原因和 restore 记录字段；明确 `pathoverlay backup list [--rule <id>] [--operation <operation-id>] [--json]` 的输入和输出字段；明确 `pathoverlay restore --backup <id> --item <id>`、`restore --all`、`--target` 和 `--overwrite` 的语义、冲突处理、pending/failed changes 限制和占用/权限失败行为。第一版只从已有 backup item 复制已落盘备份内容，不恢复新建文件的旧内容，不自动 repair，不按 commit 顺序重放删除或 rename，不宣称完整事务 rollback。验证通过：`task.json` JSON 解析、`git diff --check`，以及文档关键字检查覆盖 backup list、restore、pending changes、已有备份内容和非完整 rollback 边界。

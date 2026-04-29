@@ -206,7 +206,98 @@ dry-run 不暂停 rule、不修改 metadata、不创建备份、不移动 shadow
 - 没有 backup index 或备份文件缺失时，只报告错误。
 - 恢复前如目标 rule 存在 pending changes，默认拒绝。
 
-备份索引和手动恢复命令由 T042 细化。文档和 CLI 文案不得把第一阶段描述为完整 rollback。
+文档和 CLI 文案不得把第一阶段描述为完整 rollback。
+
+### Backup Index
+
+commit 成功或部分失败时，服务应把实际创建的备份写入可查询索引。索引只描述已落盘的备份内容，不反向生成用户继续修改后的差异，也不保证能重建一次 commit 的完整事务顺序。
+
+推荐表结构：
+
+```sql
+CREATE TABLE backup_sets_v1 (
+  backup_set_id TEXT PRIMARY KEY,
+  operation_id TEXT NOT NULL,
+  rule_id TEXT NOT NULL,
+  backup_root TEXT NOT NULL,
+  source_root TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  error TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY(operation_id) REFERENCES operations_v1(operation_id),
+  FOREIGN KEY(rule_id) REFERENCES rules(id)
+);
+
+CREATE TABLE backup_items_v1 (
+  backup_item_id TEXT PRIMARY KEY,
+  backup_set_id TEXT NOT NULL,
+  real_path TEXT NOT NULL,
+  backup_path TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  original_size INTEGER NOT NULL DEFAULT -1,
+  original_last_write_time INTEGER NOT NULL DEFAULT 0,
+  restore_status TEXT NOT NULL DEFAULT '',
+  restore_error TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY(backup_set_id) REFERENCES backup_sets_v1(backup_set_id)
+);
+```
+
+`backup_sets_v1.status` 允许：
+
+- `available`：索引和备份根存在，至少有一项可尝试手工恢复。
+- `partial`：commit 中断或备份项不完整，只能逐项检查和恢复。
+- `missing`：索引存在但备份根或全部备份文件缺失，只能报告错误。
+
+`backup_items_v1.kind` 允许 `file` 或 `directory`。`reason` 记录创建备份的原因，例如 `overwrite`、`delete` 或 `rename-source`。第一版只索引 commit 写回前已经存在且被复制到 backup root 的真实内容；新建文件没有旧内容，不生成 backup item。
+
+### `backup list`
+
+命令形式：
+
+```powershell
+pathoverlay backup list [--rule <id>] [--operation <operation-id>] [--json]
+```
+
+输入语义：
+
+- 不带参数时列出所有 backup set 摘要，按 `created_at` 倒序输出。
+- `--rule <id>` 只列出指定 rule 的 backup set。
+- `--operation <operation-id>` 只列出指定 operation/commit 对应的 backup set 和 item。
+- `--json` 输出稳定字段，供诊断工具或测试脚本消费；文本输出保持面向人工检查。
+
+文本输出应包含：
+
+- backup set：`backup_set_id`、`operation_id`、`rule_id`、`status`、`created_at`、`source_root`、`backup_root`、item 数量。
+- backup item：`backup_item_id`、`kind`、`reason`、`real_path`、`backup_path`、`original_size`、`original_last_write_time`、`restore_status`。
+- 缺失项诊断：当 `backup_path` 不存在或类型不匹配时输出 `WARN missing backup item`，但不修改索引。
+
+### `restore`
+
+命令形式：
+
+```powershell
+pathoverlay restore --backup <backup-set-id> --item <backup-item-id> [--target <path>] [--overwrite]
+pathoverlay restore --backup <backup-set-id> --all [--overwrite]
+```
+
+恢复语义：
+
+- 第一版只从已有 `backup_items_v1.backup_path` 复制内容到目标路径；备份文件或目录不存在时失败。
+- 默认目标是 item 的 `real_path`。`--target <path>` 只允许单 item 恢复，用于把备份恢复到用户指定位置；`--all` 不允许改写目标根。
+- 恢复前必须确认目标 rule 没有 pending/failed changes；存在 pending/failed changes 时默认拒绝，要求用户先 `commit`、`discard` 或另行导出备份。
+- 默认不覆盖现有目标。如果目标已存在且未指定 `--overwrite`，返回冲突并列出目标路径。
+- 指定 `--overwrite` 时仍要做类型检查：文件只能覆盖文件，目录只能覆盖目录；类型不匹配时拒绝。
+- `restore` 不暂停其他 rule，不尝试关闭占用进程；目标被占用、权限不足或父目录不可创建时失败并保留索引。
+- 成功后只更新 item 的 `restore_status` 和 `restore_error`，不删除 backup 文件，也不删除 operation、commit 或 change 历史。
+
+风险限制：
+
+- `restore --all` 是按 item 顺序的批量复制，不是事务；中途失败时已经复制的目标不会自动回滚。
+- `restore` 不根据 commit item 顺序重放删除、rename 或目录操作；它只恢复索引中已有的旧内容。
+- `restore` 不判断 commit 后用户对真实 source 的业务语义变更，只通过目标存在性、类型和可选 `--overwrite` 做保守冲突处理。
+- `restore` 不跨 rule 恢复；backup set 的 `rule_id` 必须仍存在，且目标路径必须位于该 rule 的 `source_root` 下，除非使用单 item `--target` 导出到 source 外的用户指定路径。
+- CLI 帮助、README 和诊断输出只能称为 `backup restore` 或 `manual restore`，不得称为完整 `rollback`。
 
 ## 验收映射
 

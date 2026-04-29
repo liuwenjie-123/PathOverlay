@@ -944,7 +944,7 @@
     {
       "id": "T042",
       "title": "设计备份索引与手动恢复能力",
-      "status": "pending",
+      "status": "done",
       "description": "设计 commit backup 的可查询和恢复边界，先明确备份索引和手动恢复命令语义，不直接承诺完整事务回滚。",
       "deliverables": [
         "备份索引设计",
@@ -960,7 +960,8 @@
       ],
       "depends_on": [
         "T041"
-      ]
+      ],
+      "notes_ref": "docs/task-notes.md#T042"
     },
     {
       "id": "T043",
