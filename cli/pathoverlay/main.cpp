@@ -97,18 +97,27 @@ int SendRequestRaw(const std::wstring& request, std::wstring* response) {
         return 1;
     }
 
-    char buffer[8192] = {};
+    std::string responseUtf8;
+    char buffer[65536] = {};
     DWORD bytesRead = 0;
-    if (!ReadFile(pipe, buffer, sizeof(buffer), &bytesRead, nullptr)) {
-        if (response != nullptr) {
-            *response = L"Failed to read response: " + std::to_wstring(GetLastError());
+    BOOL readSuccess = FALSE;
+    do {
+        readSuccess = ReadFile(pipe, buffer, sizeof(buffer), &bytesRead, nullptr);
+        if (!readSuccess) {
+            const DWORD error = GetLastError();
+            if (error != ERROR_MORE_DATA) {
+                if (response != nullptr) {
+                    *response = L"Failed to read response: " + std::to_wstring(error);
+                }
+                CloseHandle(pipe);
+                return 1;
+            }
         }
-        CloseHandle(pipe);
-        return 1;
-    }
+        responseUtf8.append(buffer, bytesRead);
+    } while (!readSuccess);
 
     CloseHandle(pipe);
-    *response = Utf8ToWide(std::string(buffer, buffer + bytesRead));
+    *response = Utf8ToWide(responseUtf8);
     return response->rfind(L"OK", 0) == 0 ? 0 : 1;
 }
 

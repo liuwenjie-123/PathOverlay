@@ -85,22 +85,25 @@ void WriteLog(const std::wstring& message) {
     std::error_code errorCode;
     std::filesystem::create_directories(path.parent_path(), errorCode);
 
-    std::wofstream log(path, std::ios::app);
+    std::ofstream log(path, std::ios::binary | std::ios::app);
     if (log) {
         SYSTEMTIME time = {};
         GetLocalTime(&time);
-        log << time.wYear << L"-";
-        log.width(2);
-        log.fill(L'0');
-        log << time.wMonth << L"-";
-        log.width(2);
-        log << time.wDay << L" ";
-        log.width(2);
-        log << time.wHour << L":";
-        log.width(2);
-        log << time.wMinute << L":";
-        log.width(2);
-        log << time.wSecond << L" pid=" << GetCurrentProcessId() << L" " << message << L"\n";
+        std::wstringstream line;
+        line << time.wYear << L"-";
+        line.width(2);
+        line.fill(L'0');
+        line << time.wMonth << L"-";
+        line.width(2);
+        line << time.wDay << L" ";
+        line.width(2);
+        line << time.wHour << L":";
+        line.width(2);
+        line << time.wMinute << L":";
+        line.width(2);
+        line << time.wSecond << L" pid=" << GetCurrentProcessId() << L" " << message << L"\n";
+        const std::string utf8Line = WideToUtf8(line.str());
+        log.write(utf8Line.data(), static_cast<std::streamsize>(utf8Line.size()));
     }
 }
 
@@ -1924,8 +1927,8 @@ DWORD WINAPI PipeServerThread(LPVOID parameter) {
             PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
             1,
-            8192,
-            8192,
+            65536,
+            65536,
             1000,
             nullptr);
 
@@ -1937,7 +1940,7 @@ DWORD WINAPI PipeServerThread(LPVOID parameter) {
 
         const BOOL connected = ConnectNamedPipe(pipe, nullptr) ? TRUE : GetLastError() == ERROR_PIPE_CONNECTED;
         if (connected) {
-            char buffer[4096] = {};
+            char buffer[65536] = {};
             DWORD bytesRead = 0;
             if (ReadFile(pipe, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0) {
                 const std::wstring response = ProcessRequest(Utf8ToWide(std::string(buffer, buffer + bytesRead)));

@@ -966,7 +966,7 @@
     {
       "id": "T043",
       "title": "扩展路径与属性兼容性测试",
-      "status": "pending",
+      "status": "done",
       "description": "补齐真实使用中容易出问题的路径和文件属性场景，覆盖用户态测试和测试机驱动 E2E。",
       "deliverables": [
         "用户态兼容性测试",
@@ -982,7 +982,8 @@
       ],
       "depends_on": [
         "T041"
-      ]
+      ],
+      "notes_ref": "docs/task-notes.md#T043"
     },
     {
       "id": "T044",
