@@ -45,8 +45,12 @@ std::string WideToUtf8(const std::wstring& value) {
         return {};
     }
     const int required = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    std::string output(static_cast<size_t>(required - 1), '\0');
+    if (required <= 1) {
+        return {};
+    }
+    std::string output(static_cast<size_t>(required), '\0');
     WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, output.data(), required, nullptr, nullptr);
+    output.resize(static_cast<size_t>(required - 1));
     return output;
 }
 
@@ -55,9 +59,52 @@ std::wstring Utf8ToWide(const std::string& value) {
         return {};
     }
     const int required = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), nullptr, 0);
+    if (required <= 0) {
+        return {};
+    }
     std::wstring output(static_cast<size_t>(required), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, value.c_str(), static_cast<int>(value.size()), output.data(), required);
     return output;
+}
+
+bool WriteTextToHandle(HANDLE handle, const std::wstring& text) {
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE || text.empty()) {
+        return false;
+    }
+
+    DWORD consoleMode = 0;
+    if (GetConsoleMode(handle, &consoleMode)) {
+        DWORD totalWritten = 0;
+        while (totalWritten < text.size()) {
+            DWORD written = 0;
+            const DWORD remaining = static_cast<DWORD>(text.size() - totalWritten);
+            if (!WriteConsoleW(handle, text.data() + totalWritten, remaining, &written, nullptr) || written == 0) {
+                return false;
+            }
+            totalWritten += written;
+        }
+        return true;
+    }
+
+    const std::string utf8 = WideToUtf8(text);
+    DWORD totalWritten = 0;
+    while (totalWritten < utf8.size()) {
+        DWORD written = 0;
+        const DWORD remaining = static_cast<DWORD>(utf8.size() - totalWritten);
+        if (!WriteFile(handle, utf8.data() + totalWritten, remaining, &written, nullptr) || written == 0) {
+            return false;
+        }
+        totalWritten += written;
+    }
+    return true;
+}
+
+void WriteStdout(const std::wstring& text) {
+    WriteTextToHandle(GetStdHandle(STD_OUTPUT_HANDLE), text);
+}
+
+void WriteStderr(const std::wstring& text) {
+    WriteTextToHandle(GetStdHandle(STD_ERROR_HANDLE), text);
 }
 
 std::wstring JoinArgs(int start, int argc, wchar_t* argv[]) {
@@ -125,10 +172,10 @@ int SendRequest(const std::wstring& request) {
     std::wstring response;
     const int result = SendRequestRaw(request, &response);
     if (response.rfind(L"OK", 0) != 0) {
-        std::wcerr << response << L"\n";
+        WriteStderr(response + L"\n");
         return 1;
     }
-    std::wcout << response << L"\n";
+    WriteStdout(response + L"\n");
     return result;
 }
 
@@ -232,8 +279,9 @@ int CollectDiagnostics(const std::wstring& outputPath) {
     std::error_code errorCode;
     std::filesystem::create_directories(diagnosticsRoot, errorCode);
     if (errorCode) {
-        std::wcerr << L"Failed to create diagnostics directory: " << diagnosticsRoot.wstring()
-                   << L" error=" << Utf8ToWide(errorCode.message()) << L"\n";
+        WriteStderr(
+            L"Failed to create diagnostics directory: " + diagnosticsRoot.wstring() +
+            L" error=" + Utf8ToWide(errorCode.message()) + L"\n");
         return 1;
     }
 
@@ -255,7 +303,7 @@ int CollectDiagnostics(const std::wstring& outputPath) {
             L"command=pathoverlay " + request.second + L"\nexit_code=" + std::to_wstring(result) + L"\n\n" + response + L"\n";
         std::wstring writeError;
         if (!WriteTextFile(diagnosticsRoot / request.first, content, &writeError)) {
-            std::wcerr << writeError << L"\n";
+            WriteStderr(writeError + L"\n");
             return 1;
         }
         manifest += L"wrote " + request.first + L"\n";
@@ -264,7 +312,7 @@ int CollectDiagnostics(const std::wstring& outputPath) {
     std::wstring writeError;
     if (!WriteTextFile(diagnosticsRoot / L"scm-service.txt", QueryScmStatus(kServiceName), &writeError) ||
         !WriteTextFile(diagnosticsRoot / L"scm-driver.txt", QueryScmStatus(kDriverName), &writeError)) {
-        std::wcerr << writeError << L"\n";
+        WriteStderr(writeError + L"\n");
         return 1;
     }
     manifest += L"wrote scm-service.txt\nwrote scm-driver.txt\n";
@@ -275,32 +323,32 @@ int CollectDiagnostics(const std::wstring& outputPath) {
         &manifest);
 
     if (!WriteTextFile(diagnosticsRoot / L"manifest.txt", manifest, &writeError)) {
-        std::wcerr << writeError << L"\n";
+        WriteStderr(writeError + L"\n");
         return 1;
     }
 
-    std::wcout << L"OK diagnostics collected: " << diagnosticsRoot.wstring() << L"\n";
+    WriteStdout(L"OK diagnostics collected: " + diagnosticsRoot.wstring() + L"\n");
     return 0;
 }
 
 void PrintUsage() {
-    std::wcout
-        << L"Usage:\n"
-        << L"  pathoverlay rule add <source> [--store <path>]\n"
-        << L"  pathoverlay rule enable --rule <id>\n"
-        << L"  pathoverlay rule disable --rule <id>\n"
-        << L"  pathoverlay rule delete --rule <id>\n"
-        << L"  pathoverlay rule del --rule <id>\n"
-        << L"  pathoverlay rule show\n"
-        << L"  pathoverlay debug service-write <path> <content>\n"
-        << L"  pathoverlay debug prepare-cow --rule <id> <path>\n"
-        << L"  pathoverlay changes [--rule <id>]\n"
-        << L"  pathoverlay status\n"
-        << L"  pathoverlay doctor\n"
-        << L"  pathoverlay diagnostics collect [--output <directory>]\n"
-        << L"  pathoverlay driver status\n"
-        << L"  pathoverlay commit [--dry-run] --rule <id> [--confirm-close]\n"
-        << L"  pathoverlay discard [--dry-run] --rule <id> [--confirm-close]\n";
+    WriteStdout(
+        L"Usage:\n"
+        L"  pathoverlay rule add <source> [--store <path>]\n"
+        L"  pathoverlay rule enable --rule <id>\n"
+        L"  pathoverlay rule disable --rule <id>\n"
+        L"  pathoverlay rule delete --rule <id>\n"
+        L"  pathoverlay rule del --rule <id>\n"
+        L"  pathoverlay rule show\n"
+        L"  pathoverlay debug service-write <path> <content>\n"
+        L"  pathoverlay debug prepare-cow --rule <id> <path>\n"
+        L"  pathoverlay changes [--rule <id>]\n"
+        L"  pathoverlay status\n"
+        L"  pathoverlay doctor\n"
+        L"  pathoverlay diagnostics collect [--output <directory>]\n"
+        L"  pathoverlay driver status\n"
+        L"  pathoverlay commit [--dry-run] --rule <id> [--confirm-close]\n"
+        L"  pathoverlay discard [--dry-run] --rule <id> [--confirm-close]\n");
 }
 
 }  // namespace

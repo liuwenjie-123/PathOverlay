@@ -3,6 +3,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logDir = Join-Path $root "logs"
 $driverName = "PathOverlayFlt"
@@ -63,8 +66,14 @@ function Invoke-Cli([string[]]$Arguments, [string]$FailureMessage) {
 function Invoke-CliExpectFailure([string[]]$Arguments, [string]$FailureMessage) {
     $display = "$cliPath $($Arguments -join ' ')"
     Write-Host $display
-    $output = & $cliPath @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $cliPath @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     $output | Out-Host
     if ($exitCode -eq 0) {
         throw "$FailureMessage Command unexpectedly succeeded. Output=$($output -join ' ')"
@@ -737,7 +746,8 @@ function Test-CommitDiscardByRuleDriverBehavior {
         $commitRuleChanges = Invoke-Cli @("changes", "--rule", $commitRule.Id) "Failed to query changes for commit rule."
         Write-Check "changes --rule includes selected rule only" ((Test-ChangesContainsRule $commitRuleChanges $commitRule.Id $source1 $commitRule.Store "modified" $file1) -and ($commitRuleChanges -notmatch [regex]::Escape($discardRule.Id))) $commitRuleChanges
         $commitDryRun = Invoke-Cli @("commit", "--dry-run", "--rule", $commitRule.Id) "Commit dry-run failed."
-        Write-Check "commit dry-run reports write and backup paths" ($commitDryRun -match "commit dry-run" -and $commitDryRun -match "WRITE real=$([regex]::Escape($file1))" -and $commitDryRun -match "BACKUP real=$([regex]::Escape($file1))" -and $commitDryRun -match "backup=") $commitDryRun
+        $canonicalFile1 = ConvertTo-CanonicalPath $file1
+        Write-Check "commit dry-run reports write and backup paths" ($commitDryRun -match "commit dry-run" -and $commitDryRun -match "WRITE real=$([regex]::Escape($canonicalFile1))" -and $commitDryRun -match "BACKUP real=$([regex]::Escape($canonicalFile1))" -and $commitDryRun -match "backup=") $commitDryRun
         $changesAfterCommitDryRun = Invoke-Cli @("changes") "Failed to query changes after commit dry-run."
         Write-Check "commit dry-run preserves metadata" ((Test-ChangesContainsRule $changesAfterCommitDryRun $commitRule.Id $source1 $commitRule.Store "modified" $file1) -and (Test-ChangesContainsRule $changesAfterCommitDryRun $discardRule.Id $source2 $discardRule.Store "modified" $file2)) $changesAfterCommitDryRun
         Invoke-Cli @("rule", "disable", "--rule", $commitRule.Id) "Failed to disable commit rule after dry-run." | Out-Null
@@ -777,6 +787,95 @@ function Test-CommitDiscardByRuleDriverBehavior {
             }
         } catch {
             Write-Host "Ignoring rule operation cleanup rule disable failure: $($_.Exception.Message)"
+        }
+        Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-PathAndAttributeCompatibilityDriverBehavior {
+    Write-Step "Testing T043 path and attribute compatibility"
+    $testRoot = Join-Path $env:TEMP ("PathOverlayCompat-" + [guid]::NewGuid().ToString("N"))
+    $source = Join-Path $testRoot "source"
+    New-Item -ItemType Directory -Path $source -Force | Out-Null
+
+    try {
+        $unicodeSegment = "unicode-$([char]0x8DEF)$([char]0x5F84)"
+        $unicodeFileName = "$([char]0x6570)$([char]0x636E)-file.txt"
+        $unicodeDir = Join-Path $source $unicodeSegment
+        $longDir = Join-Path $unicodeDir "deep-segment-001\deep-segment-002\deep-segment-003\deep-segment-004\deep-segment-005"
+        New-Item -ItemType Directory -Path $longDir -Force | Out-Null
+        $longUnicodeFile = Join-Path $longDir $unicodeFileName
+        Set-Content -LiteralPath $longUnicodeFile -Value "long-unicode-base" -Encoding ASCII
+
+        $caseFile = Join-Path $source "CaseName.txt"
+        Set-Content -LiteralPath $caseFile -Value "case-base" -Encoding ASCII
+        $shortProbe = Join-Path $source "ShortNameProbe.txt"
+        Set-Content -LiteralPath $shortProbe -Value "short-base" -Encoding ASCII
+
+        $readonlyFile = Join-Path $source "readonly-time.txt"
+        Set-Content -LiteralPath $readonlyFile -Value "readonly-base" -Encoding ASCII
+        $expectedTime = [datetime]::SpecifyKind([datetime]"2024-01-02T03:04:05", [System.DateTimeKind]::Utc)
+        (Get-Item -LiteralPath $readonlyFile).LastWriteTimeUtc = $expectedTime
+        Set-ItemProperty -LiteralPath $readonlyFile -Name IsReadOnly -Value $true
+
+        Invoke-Cli @("rule", "add", $source) "Failed to add compatibility rule." | Out-Null
+        $ruleShow = Invoke-Cli @("rule", "show") "Failed to show compatibility rule."
+        $rule = Get-RuleBySource $ruleShow $source
+
+        Set-Content -LiteralPath $longUnicodeFile -Value "long-unicode-overlay" -Encoding ASCII
+        $longUnicodeShadow = ConvertTo-ShadowPath $rule.Store $longUnicodeFile
+        Write-Check "long unicode path writes to shadow" ((Get-Content -LiteralPath $longUnicodeShadow -Raw) -match "long-unicode-overlay") "shadow=$longUnicodeShadow"
+
+        $caseVariant = Join-Path $source "casename.txt"
+        Set-Content -LiteralPath $caseVariant -Value "case-overlay" -Encoding ASCII
+        $caseShadow = ConvertTo-ShadowPath $rule.Store $caseFile
+        Write-Check "case-variant path writes to canonical shadow" ((Get-Content -LiteralPath $caseShadow -Raw) -match "case-overlay") "shadow=$caseShadow"
+
+        $shortPath = ConvertTo-ShortPath $shortProbe
+        if ($shortPath -and ($shortPath -ine $shortProbe)) {
+            Set-Content -LiteralPath $shortPath -Value "short-overlay" -Encoding ASCII
+            $shortShadow = ConvertTo-ShadowPath $rule.Store $shortProbe
+            Write-Check "8.3 short path writes to shadow" ((Get-Content -LiteralPath $shortShadow -Raw) -match "short-overlay") "short=$shortPath shadow=$shortShadow"
+        } else {
+            Write-Check "8.3 short path unavailable" $true "volume did not return a distinct short path"
+        }
+
+        $prepareOutput = Invoke-Cli @("debug", "prepare-cow", "--rule", $rule.Id, $readonlyFile) "Failed to prepare readonly compatibility shadow."
+        Write-Check "readonly prepare-cow returns shadow path" ($prepareOutput -match "^OK shadow=") $prepareOutput
+        $readonlyShadow = ($prepareOutput -replace "^OK shadow=", "").Trim()
+        $readonlyShadowItem = Get-Item -LiteralPath $readonlyShadow
+        $shadowTimeDelta = [math]::Abs(($readonlyShadowItem.LastWriteTimeUtc - $expectedTime).TotalSeconds)
+        Write-Check "readonly attribute is preserved in shadow" $readonlyShadowItem.IsReadOnly "shadow=$readonlyShadow"
+        Write-Check "last-write timestamp is preserved in shadow" ($shadowTimeDelta -le 2) "shadow=$readonlyShadow expected=$expectedTime actual=$($readonlyShadowItem.LastWriteTimeUtc)"
+        Set-ItemProperty -LiteralPath $readonlyShadow -Name IsReadOnly -Value $false
+        Set-ItemProperty -LiteralPath $readonlyFile -Name IsReadOnly -Value $false
+
+        $emptyNested = Join-Path $source "empty-root\nested\leaf"
+        New-Item -ItemType Directory -Path $emptyNested -Force | Out-Null
+        $emptyShadow = ConvertTo-ShadowPath $rule.Store (Join-Path $source "empty-root")
+        Write-Check "empty nested directory is visible through overlay" (Test-Path -LiteralPath $emptyNested) "path=$emptyNested"
+        Write-Check "empty nested directory is created in shadow" (Test-Path -LiteralPath (Join-Path $emptyShadow "nested\leaf")) "shadow=$emptyShadow"
+        Invoke-Cli @("rule", "disable", "--rule", $rule.Id) "Failed to disable compatibility rule for real path verification." | Out-Null
+        Write-Check "empty nested directory did not pre-create real source" (-not (Test-Path -LiteralPath (Join-Path $source "empty-root"))) "source=$source"
+        Invoke-Cli @("rule", "enable", "--rule", $rule.Id) "Failed to re-enable compatibility rule." | Out-Null
+
+        $changes = Invoke-Cli @("changes", "--rule", $rule.Id) "Failed to query compatibility changes."
+        Write-Check "compatibility changes include long unicode path" (Test-ChangesContainsRule $changes $rule.Id $source $rule.Store "modified" $longUnicodeFile) $changes
+    } finally {
+        try {
+            $ruleShow = Invoke-Cli @("rule", "show") "Failed to show rules during compatibility cleanup."
+            foreach ($rule in (Parse-Rules $ruleShow)) {
+                if ($rule.Enabled) {
+                    Invoke-Cli @("rule", "disable", "--rule", $rule.Id) "Failed to disable rule during compatibility cleanup." | Out-Null
+                }
+            }
+        } catch {
+            Write-Host "Ignoring compatibility cleanup rule disable failure: $($_.Exception.Message)"
+        }
+        Get-ChildItem -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            if (-not $_.PSIsContainer) {
+                try { Set-ItemProperty -LiteralPath $_.FullName -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue } catch {}
+            }
         }
         Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -860,6 +959,8 @@ try {
     Test-DirectoryRenameDriverBehavior
     Restart-ServiceWithCleanData "T026 commit/discard by rule test"
     Test-CommitDiscardByRuleDriverBehavior
+    Restart-ServiceWithCleanData "T043 path and attribute compatibility test"
+    Test-PathAndAttributeCompatibilityDriverBehavior
     Restart-ServiceWithCleanData "T027 occupied commit test"
     Test-OccupiedCommitDriverBehavior
 
