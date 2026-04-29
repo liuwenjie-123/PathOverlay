@@ -37,6 +37,20 @@ struct CommitRecord {
     std::wstring error;
 };
 
+struct OperationRecord {
+    std::wstring id;
+    std::wstring ruleId;
+    std::wstring action;
+    std::wstring status;
+    std::wstring phase;
+    std::wstring startedAt;
+    std::wstring updatedAt;
+    std::wstring finishedAt;
+    std::wstring backupRoot;
+    std::wstring error;
+    bool ruleWasEnabled = false;
+};
+
 class MetadataStore {
 public:
     MetadataStore();
@@ -60,6 +74,18 @@ public:
     bool DeleteChangesForRule(const std::wstring& ruleId, std::wstring* error);
     bool AddCommitRecord(const CommitRecord& record, std::wstring* error);
     bool GetCommitRecord(const std::wstring& commitId, CommitRecord* record, std::wstring* error);
+    bool AddOperationRecord(const OperationRecord& record, std::wstring* error);
+    bool UpdateOperationRecord(
+        const std::wstring& operationId,
+        const std::wstring& status,
+        const std::wstring& phase,
+        const std::wstring& updatedAt,
+        const std::wstring& finishedAt,
+        const std::wstring& backupRoot,
+        const std::wstring& operationError,
+        std::wstring* error);
+    bool ListOperations(std::vector<OperationRecord>* records, std::wstring* error);
+    bool RecoverInterruptedOperations(std::vector<OperationRecord>* recovered, std::wstring* error);
 
 private:
     void* sqliteLibrary_ = nullptr;

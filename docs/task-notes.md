@@ -210,3 +210,9 @@
 ## T036 - 规划稳定化与恢复策略
 
 2026-04-28：已新增 `docs/Stabilization_and_Recovery_Plan.md`，定义稳定化阶段的 operation 状态机、commit/discard 中断恢复策略、discard cleanup queue 持久化和重启续删策略、`status`、`doctor`、`diagnostics collect` 输出范围、dry-run 和 `changes --rule` 语义，以及 repair、restore、rollback 第一阶段不自动执行的边界。README 已补充该稳定化计划入口，并明确当前 vNext 原型尚未完成 operation 恢复、cleanup 续删、诊断命令、dry-run 和备份恢复能力，第一阶段只做保守诊断和可重试状态记录，不宣称完整 rollback。验证通过：`task.json` JSON 解析、`docs/Stabilization_and_Recovery_Plan.md` 存在且覆盖 T036 验收点、README 引用该文档。
+
+<a id="T037"></a>
+
+## T037 - 实现 commit/discard 操作状态与启动恢复
+
+2026-04-29：已新增 `operations` 元数据表和 `OperationRecord`，记录 operation id、rule id、action、status、phase、时间、backup root、错误和 operation 前 rule 启用状态。服务端 commit/discard 会在执行前创建 running operation，并在 prechecked、rule_paused、applying、cleanup、restoring_rule、finished 或 failed 阶段更新状态；commit 复用 operation id 作为 commit id，便于日志关联。服务启动时调用 `RecoverInterruptedOperations`，把遗留 `running` 的 applying/cleanup 操作标记为 `failed`，其他阶段标记为 `recoverable`，保留 pending changes 和 shadow 数据，并只在 operation 前 rule 原本启用时恢复 rule enabled 状态。新增用户态测试覆盖 running operation 恢复为 failed/recoverable、恢复状态可由 metadata 查询、pending changes 和 shadow 保留、恢复后同一 rule 可再次 commit。验证通过：`task.json` JSON 解析、`git diff --check`、`scripts/build.ps1`、`scripts/test.ps1`。

@@ -478,6 +478,84 @@ std::wstring MakeCommitId() {
     return stream.str();
 }
 
+std::wstring MakeTimestamp() {
+    SYSTEMTIME time = {};
+    GetSystemTime(&time);
+
+    std::wstringstream stream;
+    stream << time.wYear
+           << L"-" << (time.wMonth < 10 ? L"0" : L"") << time.wMonth
+           << L"-" << (time.wDay < 10 ? L"0" : L"") << time.wDay
+           << L"T" << (time.wHour < 10 ? L"0" : L"") << time.wHour
+           << L":" << (time.wMinute < 10 ? L"0" : L"") << time.wMinute
+           << L":" << (time.wSecond < 10 ? L"0" : L"") << time.wSecond
+           << L"Z";
+    return stream.str();
+}
+
+std::wstring MakeOperationId(const std::wstring& action) {
+    SYSTEMTIME time = {};
+    GetSystemTime(&time);
+
+    std::wstringstream stream;
+    stream << L"cli-" << action << L"-"
+           << time.wYear
+           << (time.wMonth < 10 ? L"0" : L"") << time.wMonth
+           << (time.wDay < 10 ? L"0" : L"") << time.wDay
+           << L"-"
+           << (time.wHour < 10 ? L"0" : L"") << time.wHour
+           << (time.wMinute < 10 ? L"0" : L"") << time.wMinute
+           << (time.wSecond < 10 ? L"0" : L"") << time.wSecond
+           << L"-" << GetCurrentProcessId()
+           << L"-" << GetTickCount64();
+    return stream.str();
+}
+
+bool StartOperationRecord(
+    pathoverlay::MetadataStore& metadata,
+    const std::wstring& operationId,
+    const pathoverlay::OverlayRule& rule,
+    const std::wstring& action,
+    const std::wstring& backupRoot,
+    std::wstring* error) {
+    const std::wstring now = MakeTimestamp();
+    pathoverlay::OperationRecord record;
+    record.id = operationId;
+    record.ruleId = rule.id;
+    record.action = action;
+    record.status = L"running";
+    record.phase = L"created";
+    record.startedAt = now;
+    record.updatedAt = now;
+    record.finishedAt = L"";
+    record.backupRoot = backupRoot;
+    record.error = L"";
+    record.ruleWasEnabled = rule.enabled;
+    return metadata.AddOperationRecord(record, error);
+}
+
+bool UpdateOperationRecord(
+    pathoverlay::MetadataStore& metadata,
+    const std::wstring& operationId,
+    const std::wstring& status,
+    const std::wstring& phase,
+    const std::wstring& backupRoot,
+    const std::wstring& operationError,
+    std::wstring* error) {
+    const std::wstring now = MakeTimestamp();
+    const std::wstring finished = (status == L"running") ? L"" : now;
+    std::wstring ignoredError;
+    return metadata.UpdateOperationRecord(
+        operationId,
+        status,
+        phase,
+        now,
+        finished,
+        backupRoot,
+        operationError,
+        error != nullptr ? error : &ignoredError);
+}
+
 struct ParsedRuleAdd {
     std::wstring source;
     std::wstring store;
@@ -1000,6 +1078,21 @@ bool InitializeRuntime() {
         return false;
     }
 
+    std::vector<pathoverlay::OperationRecord> recoveredOperations;
+    if (!metadata.RecoverInterruptedOperations(&recoveredOperations, &error)) {
+        WriteLog(L"fatal: failed to recover interrupted operations: " + error);
+        return false;
+    }
+    for (const auto& operation : recoveredOperations) {
+        WriteLog(
+            L"recovery: operation=" + operation.id +
+            L" action=" + operation.action +
+            L" rule=" + operation.ruleId +
+            L" status=" + operation.status +
+            L" phase=" + operation.phase +
+            L" error=" + operation.error);
+    }
+
     WriteLog(L"service runtime initialized");
     ConnectDriverPort();
     SyncDriverRuleCache(metadata);
@@ -1223,20 +1316,35 @@ std::wstring ProcessRequest(const std::wstring& request) {
             return L"ERROR rule not found: " + operation.ruleId;
         }
 
+        const std::wstring operationName = isCommit ? L"commit" : L"discard";
+        const std::wstring operationId = isCommit ? MakeCommitId() : MakeOperationId(L"discard");
+        const std::wstring backupRoot = isCommit
+            ? pathoverlay::NormalizePath(rule.store.empty() ? pathoverlay::DefaultStoreRoot() : rule.store) +
+                  L"\\backups\\" + operationId
+            : L"";
+        if (!StartOperationRecord(metadata, operationId, rule, operationName, backupRoot, &error)) {
+            return L"ERROR failed to start " + operationName + L" operation: " + error;
+        }
+
         std::vector<pathoverlay::ChangeRecord> records;
         if (!metadata.ListChanges(rule.id, &records, &error)) {
+            UpdateOperationRecord(metadata, operationId, L"failed", L"created", backupRoot, error, nullptr);
             return L"ERROR " + error;
         }
         if (!EnsureNoOccupyingProcesses(records, isCommit, operation.confirmClose, &error)) {
-            const std::wstring operationName = isCommit ? L"commit" : L"discard";
+            UpdateOperationRecord(metadata, operationId, L"failed", L"created", backupRoot, error, nullptr);
             return L"ERROR " + operationName + L" failed rule=" + rule.id +
                 L" source=" + rule.source + L" store=" + rule.store + L" error=" + error;
+        }
+        if (!UpdateOperationRecord(metadata, operationId, L"running", L"prechecked", backupRoot, L"", &error)) {
+            return L"ERROR failed to update " + operationName + L" operation: " + error;
         }
 
         const bool restoreEnabled = rule.enabled;
         std::wstring syncWarning;
         if (restoreEnabled) {
             if (!metadata.SetRuleEnabled(rule.id, false, &error)) {
+                UpdateOperationRecord(metadata, operationId, L"failed", L"prechecked", backupRoot, error, nullptr);
                 return L"ERROR failed to pause rule: " + error;
             }
 
@@ -1245,39 +1353,57 @@ std::wstring ProcessRequest(const std::wstring& request) {
             std::vector<pathoverlay::OverlayRule> rules;
             if (!metadata.ListRules(&rules, &error)) {
                 metadata.SetRuleEnabled(rule.id, true, &error);
+                UpdateOperationRecord(metadata, operationId, L"failed", L"prechecked", backupRoot, error, nullptr);
                 return L"ERROR failed to pause driver rule: " + error;
             }
             if (IsDriverPortConnected() && !PushDriverRules(rules, &error)) {
                 metadata.SetRuleEnabled(rule.id, true, &error);
+                UpdateOperationRecord(metadata, operationId, L"failed", L"prechecked", backupRoot, error, nullptr);
                 return L"ERROR failed to pause driver rule: " + error;
             }
             if (!IsDriverPortConnected()) {
                 syncWarning = L"driver sync skipped: driver not connected";
+            }
+            if (!UpdateOperationRecord(metadata, operationId, L"running", L"rule_paused", backupRoot, L"", &error)) {
+                metadata.SetRuleEnabled(rule.id, true, &error);
+                return L"ERROR failed to update " + operationName + L" operation: " + error;
             }
             WriteLog(L"rule " + rule.id + L" paused for " + (isCommit ? L"commit" : L"discard"));
         }
 
         pathoverlay::OverlayOperations operations(metadata);
         pathoverlay::OperationResult result;
+        if (!UpdateOperationRecord(metadata, operationId, L"running", L"applying", backupRoot, L"", &error)) {
+            return L"ERROR failed to update " + operationName + L" operation: " + error;
+        }
         if (isCommit) {
-            result = operations.Commit(rule, MakeCommitId());
+            result = operations.Commit(rule, operationId);
         } else {
             result = operations.Discard(rule);
+        }
+        if (!result.success) {
+            UpdateOperationRecord(metadata, operationId, L"failed", L"applying", backupRoot, result.message, nullptr);
+        } else if (!UpdateOperationRecord(metadata, operationId, L"running", L"cleanup", backupRoot, L"", &error)) {
+            return L"ERROR " + operationName + L" completed but failed to update operation: " + error;
         }
 
         if (restoreEnabled) {
             std::wstring restoreError;
+            UpdateOperationRecord(metadata, operationId, L"running", L"restoring_rule", backupRoot, L"", nullptr);
             if (!metadata.SetRuleEnabled(rule.id, true, &restoreError)) {
+                UpdateOperationRecord(metadata, operationId, L"failed", L"restoring_rule", backupRoot, restoreError, nullptr);
                 return L"ERROR " + std::wstring(isCommit ? L"commit" : L"discard") +
                     L" completed but failed to restore rule: " + restoreError;
             }
             rule.enabled = true;
             std::vector<pathoverlay::OverlayRule> rules;
             if (!metadata.ListRules(&rules, &restoreError)) {
+                UpdateOperationRecord(metadata, operationId, L"failed", L"restoring_rule", backupRoot, restoreError, nullptr);
                 return L"ERROR " + std::wstring(isCommit ? L"commit" : L"discard") +
                     L" completed but failed to restore driver rule: " + restoreError;
             }
             if (IsDriverPortConnected() && !PushDriverRules(rules, &restoreError)) {
+                UpdateOperationRecord(metadata, operationId, L"failed", L"restoring_rule", backupRoot, restoreError, nullptr);
                 return L"ERROR " + std::wstring(isCommit ? L"commit" : L"discard") +
                     L" completed but failed to restore driver rule: " + restoreError;
             }
@@ -1287,9 +1413,12 @@ std::wstring ProcessRequest(const std::wstring& request) {
             WriteLog(L"rule " + rule.id + L" restored after " + (isCommit ? L"commit" : L"discard"));
         }
 
-        const std::wstring operationName = isCommit ? L"commit" : L"discard";
         const std::wstring ruleContext =
             L" rule=" + rule.id + L" source=" + rule.source + L" store=" + rule.store;
+        if (result.success &&
+            !UpdateOperationRecord(metadata, operationId, L"done", L"finished", backupRoot, L"", &error)) {
+            return L"ERROR " + operationName + L" completed but failed to update operation: " + error;
+        }
         return result.success
             ? AppendDriverSyncWarning(L"OK " + operationName + L" completed" + ruleContext, syncWarning)
             : L"ERROR " + operationName + L" failed" + ruleContext + L" error=" + result.message;

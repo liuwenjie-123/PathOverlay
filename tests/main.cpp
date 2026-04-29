@@ -280,11 +280,94 @@ int wmain() {
         ok &= Expect(metadata.UpsertRule(opsRule, &sqliteError), L"operations rule should be persisted");
 
         pathoverlay::OverlayOperations operations(metadata);
+
+        const std::wstring recoverySource = TempPathOverlayDir(L"recovery_source");
+        const std::wstring recoveryStore = TempPathOverlayDir(L"recovery_store");
+        EnsureDirectory(recoverySource);
+        EnsureDirectory(recoveryStore);
+        pathoverlay::OverlayRule recoveryRule{L"rule-recovery", L"recovery", true, recoverySource, recoveryStore};
+        ok &= Expect(metadata.UpsertRule(recoveryRule, &sqliteError), L"recovery rule should be persisted");
+        const std::wstring recoveryReal = recoverySource + L"\\recovery.txt";
+        ok &= Expect(WriteTextFile(recoveryReal, "recovery-base"), L"recovery real file should be created");
+        std::wstring recoveryShadow;
+        ok &= Expect(operations.PrepareCopyOnWrite(recoveryRule, recoveryReal, &recoveryShadow).success,
+                     L"recovery shadow should be prepared");
+        ok &= Expect(WriteTextFile(recoveryShadow, "recovery-overlay"), L"recovery shadow should be writable");
+        pathoverlay::OperationRecord interruptedCommit;
+        interruptedCommit.id = L"operation-recovery-commit";
+        interruptedCommit.ruleId = recoveryRule.id;
+        interruptedCommit.action = L"commit";
+        interruptedCommit.status = L"running";
+        interruptedCommit.phase = L"applying";
+        interruptedCommit.startedAt = L"2026-04-29T00:00:00Z";
+        interruptedCommit.updatedAt = L"2026-04-29T00:00:00Z";
+        interruptedCommit.backupRoot = recoveryStore + L"\\backups\\operation-recovery-commit";
+        interruptedCommit.ruleWasEnabled = true;
+        ok &= Expect(metadata.AddOperationRecord(interruptedCommit, &sqliteError),
+                     L"running operation should be persisted");
+        ok &= Expect(metadata.SetRuleEnabled(recoveryRule.id, false, &sqliteError),
+                     L"interrupted operation should leave rule disabled for recovery test");
+        std::vector<pathoverlay::OperationRecord> recoveredOperations;
+        ok &= Expect(metadata.RecoverInterruptedOperations(&recoveredOperations, &sqliteError),
+                     L"interrupted operations should recover on startup");
+        ok &= Expect(!recoveredOperations.empty() &&
+                     recoveredOperations[0].id == interruptedCommit.id &&
+                     recoveredOperations[0].status == L"failed",
+                     L"running applying operation should become failed");
+        pathoverlay::OverlayRule recoveredRule;
+        ok &= Expect(metadata.GetRule(recoveryRule.id, &recoveredRule, &sqliteError) && recoveredRule.enabled,
+                     L"recovery should restore disabled rule state");
+        std::vector<pathoverlay::ChangeRecord> recoveryChanges;
+        ok &= Expect(operations.ListChanges(recoveryRule.id, &recoveryChanges).success && !recoveryChanges.empty(),
+                     L"recovery should preserve pending changes");
+        ok &= Expect(ReadTextFile(recoveryShadow) == "recovery-overlay",
+                     L"recovery should preserve shadow data");
+        pathoverlay::OperationRecord interruptedDiscard;
+        interruptedDiscard.id = L"operation-recovery-discard";
+        interruptedDiscard.ruleId = recoveryRule.id;
+        interruptedDiscard.action = L"discard";
+        interruptedDiscard.status = L"running";
+        interruptedDiscard.phase = L"created";
+        interruptedDiscard.startedAt = L"2026-04-29T00:01:00Z";
+        interruptedDiscard.updatedAt = L"2026-04-29T00:01:00Z";
+        interruptedDiscard.ruleWasEnabled = true;
+        ok &= Expect(metadata.AddOperationRecord(interruptedDiscard, &sqliteError),
+                     L"created running operation should be persisted");
+        recoveredOperations.clear();
+        ok &= Expect(metadata.RecoverInterruptedOperations(&recoveredOperations, &sqliteError),
+                     L"created operation should recover on startup");
+        bool recoverableDiscardFound = false;
+        for (const auto& record : recoveredOperations) {
+            if (record.id == interruptedDiscard.id && record.status == L"recoverable") {
+                recoverableDiscardFound = true;
+            }
+        }
+        ok &= Expect(recoverableDiscardFound, L"created running operation should become recoverable");
+        std::vector<pathoverlay::OperationRecord> operationRecords;
+        ok &= Expect(metadata.ListOperations(&operationRecords, &sqliteError),
+                     L"operation records should be queryable for diagnostics");
+        bool failedOperationQueryable = false;
+        bool recoverableOperationQueryable = false;
+        for (const auto& record : operationRecords) {
+            if (record.id == interruptedCommit.id && record.status == L"failed") {
+                failedOperationQueryable = true;
+            }
+            if (record.id == interruptedDiscard.id && record.status == L"recoverable") {
+                recoverableOperationQueryable = true;
+            }
+        }
+        ok &= Expect(failedOperationQueryable && recoverableOperationQueryable,
+                     L"recovery status should be readable from metadata");
+        pathoverlay::OperationResult opResult = operations.Commit(recoveryRule, L"commit-recovery-retry");
+        ok &= Expect(opResult.success, L"same rule should commit after recovery");
+        ok &= Expect(ReadTextFile(recoveryReal) == "recovery-overlay",
+                     L"retry commit after recovery should write real file");
+
         const std::wstring existingReal = opsSource + L"\\existing.txt";
         ok &= Expect(WriteTextFile(existingReal, "original"), L"existing real file should be created");
 
         std::wstring existingShadow;
-        pathoverlay::OperationResult opResult = operations.PrepareCopyOnWrite(opsRule, existingReal, &existingShadow);
+        opResult = operations.PrepareCopyOnWrite(opsRule, existingReal, &existingShadow);
         ok &= Expect(opResult.success, L"copy-on-write should prepare shadow copy");
         ok &= Expect(ReadTextFile(existingShadow) == "original", L"shadow copy should contain original data");
         ok &= Expect(WriteTextFile(existingShadow, "changed"), L"shadow file should be writable");

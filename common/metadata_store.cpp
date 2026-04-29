@@ -280,6 +280,20 @@ bool MetadataStore::Initialize(std::wstring* error) {
         "  operations TEXT NOT NULL,"
         "  backup_path TEXT NOT NULL,"
         "  error TEXT NOT NULL"
+        ");"
+        "CREATE TABLE IF NOT EXISTS operations ("
+        "  id TEXT PRIMARY KEY,"
+        "  rule_id TEXT NOT NULL,"
+        "  action TEXT NOT NULL,"
+        "  status TEXT NOT NULL,"
+        "  phase TEXT NOT NULL,"
+        "  started_at TEXT NOT NULL,"
+        "  updated_at TEXT NOT NULL,"
+        "  finished_at TEXT NOT NULL,"
+        "  backup_root TEXT NOT NULL,"
+        "  error TEXT NOT NULL,"
+        "  rule_was_enabled INTEGER NOT NULL DEFAULT 0,"
+        "  FOREIGN KEY(rule_id) REFERENCES rules(id) ON DELETE CASCADE"
         ");";
 
     if (!Exec(static_cast<sqlite3*>(database_), kSchema, error)) {
@@ -301,6 +315,26 @@ bool MetadataStore::Initialize(std::wstring* error) {
         if (message.find(L"duplicate column name") == std::wstring::npos) {
             if (error != nullptr) {
                 *error = L"failed to migrate changes target_path: " + message;
+            }
+            return false;
+        }
+    }
+
+    sqliteError = nullptr;
+    const int operationAlterResult = g_sqlite.exec(
+        static_cast<sqlite3*>(database_),
+        "ALTER TABLE operations ADD COLUMN rule_was_enabled INTEGER NOT NULL DEFAULT 0;",
+        nullptr,
+        nullptr,
+        &sqliteError);
+    if (operationAlterResult != SQLITE_OK_VALUE) {
+        const std::wstring message = sqliteError != nullptr ? Utf8ToWide(sqliteError) : L"";
+        if (sqliteError != nullptr) {
+            g_sqlite.free(sqliteError);
+        }
+        if (message.find(L"duplicate column name") == std::wstring::npos) {
+            if (error != nullptr) {
+                *error = L"failed to migrate operations rule_was_enabled: " + message;
             }
             return false;
         }
@@ -605,6 +639,200 @@ bool MetadataStore::GetCommitRecord(const std::wstring& commitId, CommitRecord* 
     }
     g_sqlite.finalize(statement);
     return false;
+}
+
+bool MetadataStore::AddOperationRecord(const OperationRecord& record, std::wstring* error) {
+    static constexpr char kSql[] =
+        "INSERT INTO operations(id, rule_id, action, status, phase, started_at, updated_at, finished_at, backup_root, error, rule_was_enabled) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+
+    sqlite3_stmt* statement = nullptr;
+    sqlite3* db = static_cast<sqlite3*>(database_);
+    if (g_sqlite.prepare_v2(db, kSql, -1, &statement, nullptr) != SQLITE_OK_VALUE) {
+        *error = LastErrorMessage(db, L"failed to prepare operation insert");
+        return false;
+    }
+
+    const bool bindOk = BindText(statement, 1, record.id) &&
+                        BindText(statement, 2, record.ruleId) &&
+                        BindText(statement, 3, record.action) &&
+                        BindText(statement, 4, record.status) &&
+                        BindText(statement, 5, record.phase) &&
+                        BindText(statement, 6, record.startedAt) &&
+                        BindText(statement, 7, record.updatedAt) &&
+                        BindText(statement, 8, record.finishedAt) &&
+                        BindText(statement, 9, record.backupRoot) &&
+                        BindText(statement, 10, record.error) &&
+                        g_sqlite.bind_int(statement, 11, record.ruleWasEnabled ? 1 : 0) == SQLITE_OK_VALUE;
+    const bool ok = bindOk && g_sqlite.step(statement) == SQLITE_DONE_VALUE;
+    if (!ok && error != nullptr) {
+        *error = LastErrorMessage(db, L"failed to insert operation record");
+    }
+    g_sqlite.finalize(statement);
+    return ok;
+}
+
+bool MetadataStore::UpdateOperationRecord(
+    const std::wstring& operationId,
+    const std::wstring& status,
+    const std::wstring& phase,
+    const std::wstring& updatedAt,
+    const std::wstring& finishedAt,
+    const std::wstring& backupRoot,
+    const std::wstring& operationError,
+    std::wstring* error) {
+    static constexpr char kSql[] =
+        "UPDATE operations SET status = ?, phase = ?, updated_at = ?, finished_at = ?, backup_root = ?, error = ? "
+        "WHERE id = ?;";
+
+    sqlite3_stmt* statement = nullptr;
+    sqlite3* db = static_cast<sqlite3*>(database_);
+    if (g_sqlite.prepare_v2(db, kSql, -1, &statement, nullptr) != SQLITE_OK_VALUE) {
+        *error = LastErrorMessage(db, L"failed to prepare operation update");
+        return false;
+    }
+
+    const bool bindOk = BindText(statement, 1, status) &&
+                        BindText(statement, 2, phase) &&
+                        BindText(statement, 3, updatedAt) &&
+                        BindText(statement, 4, finishedAt) &&
+                        BindText(statement, 5, backupRoot) &&
+                        BindText(statement, 6, operationError) &&
+                        BindText(statement, 7, operationId);
+    const bool ok = bindOk && g_sqlite.step(statement) == SQLITE_DONE_VALUE;
+    if (!ok && error != nullptr) {
+        *error = LastErrorMessage(db, L"failed to update operation record");
+    }
+    g_sqlite.finalize(statement);
+    return ok;
+}
+
+bool MetadataStore::ListOperations(std::vector<OperationRecord>* records, std::wstring* error) {
+    static constexpr char kSql[] =
+        "SELECT id, rule_id, action, status, phase, started_at, updated_at, finished_at, backup_root, error, rule_was_enabled "
+        "FROM operations ORDER BY started_at, id;";
+
+    records->clear();
+    sqlite3_stmt* statement = nullptr;
+    sqlite3* db = static_cast<sqlite3*>(database_);
+    if (g_sqlite.prepare_v2(db, kSql, -1, &statement, nullptr) != SQLITE_OK_VALUE) {
+        *error = LastErrorMessage(db, L"failed to prepare operation list");
+        return false;
+    }
+
+    while (true) {
+        const int step = g_sqlite.step(statement);
+        if (step == SQLITE_DONE_VALUE) {
+            g_sqlite.finalize(statement);
+            return true;
+        }
+        if (step != SQLITE_ROW_VALUE) {
+            if (error != nullptr) {
+                *error = LastErrorMessage(db, L"failed to list operations");
+            }
+            g_sqlite.finalize(statement);
+            return false;
+        }
+
+        OperationRecord record;
+        record.id = ColumnText(statement, 0);
+        record.ruleId = ColumnText(statement, 1);
+        record.action = ColumnText(statement, 2);
+        record.status = ColumnText(statement, 3);
+        record.phase = ColumnText(statement, 4);
+        record.startedAt = ColumnText(statement, 5);
+        record.updatedAt = ColumnText(statement, 6);
+        record.finishedAt = ColumnText(statement, 7);
+        record.backupRoot = ColumnText(statement, 8);
+        record.error = ColumnText(statement, 9);
+        record.ruleWasEnabled = g_sqlite.column_int(statement, 10) != 0;
+        records->push_back(record);
+    }
+}
+
+bool MetadataStore::RecoverInterruptedOperations(std::vector<OperationRecord>* recovered, std::wstring* error) {
+    static constexpr char kSql[] =
+        "SELECT id, rule_id, action, status, phase, started_at, updated_at, finished_at, backup_root, error, rule_was_enabled "
+        "FROM operations WHERE status = 'running' ORDER BY started_at, id;";
+
+    if (recovered != nullptr) {
+        recovered->clear();
+    }
+
+    sqlite3_stmt* statement = nullptr;
+    sqlite3* db = static_cast<sqlite3*>(database_);
+    if (g_sqlite.prepare_v2(db, kSql, -1, &statement, nullptr) != SQLITE_OK_VALUE) {
+        *error = LastErrorMessage(db, L"failed to prepare interrupted operation query");
+        return false;
+    }
+
+    std::vector<OperationRecord> running;
+    while (true) {
+        const int step = g_sqlite.step(statement);
+        if (step == SQLITE_DONE_VALUE) {
+            break;
+        }
+        if (step != SQLITE_ROW_VALUE) {
+            if (error != nullptr) {
+                *error = LastErrorMessage(db, L"failed to query interrupted operations");
+            }
+            g_sqlite.finalize(statement);
+            return false;
+        }
+
+        OperationRecord record;
+        record.id = ColumnText(statement, 0);
+        record.ruleId = ColumnText(statement, 1);
+        record.action = ColumnText(statement, 2);
+        record.status = ColumnText(statement, 3);
+        record.phase = ColumnText(statement, 4);
+        record.startedAt = ColumnText(statement, 5);
+        record.updatedAt = ColumnText(statement, 6);
+        record.finishedAt = ColumnText(statement, 7);
+        record.backupRoot = ColumnText(statement, 8);
+        record.error = ColumnText(statement, 9);
+        record.ruleWasEnabled = g_sqlite.column_int(statement, 10) != 0;
+        running.push_back(record);
+    }
+    g_sqlite.finalize(statement);
+
+    for (OperationRecord& record : running) {
+        const bool applying = record.phase == L"applying" || record.phase == L"cleanup";
+        const std::wstring status = applying ? L"failed" : L"recoverable";
+        const std::wstring recoveryError =
+            applying
+                ? L"service restarted while operation may have been applying filesystem changes; pending metadata and shadow data were preserved"
+                : L"service restarted before operation completed; retry commit or discard after inspection";
+        const std::wstring finished = L"startup-recovery";
+        if (!UpdateOperationRecord(
+                record.id,
+                status,
+                record.phase,
+                finished,
+                finished,
+                record.backupRoot,
+                recoveryError,
+                error)) {
+            return false;
+        }
+
+        OverlayRule rule;
+        std::wstring ruleError;
+        if (record.ruleWasEnabled && GetRule(record.ruleId, &rule, &ruleError) && !rule.enabled) {
+            std::wstring enableError;
+            SetRuleEnabled(record.ruleId, true, &enableError);
+        }
+
+        record.status = status;
+        record.updatedAt = finished;
+        record.finishedAt = finished;
+        record.error = recoveryError;
+        if (recovered != nullptr) {
+            recovered->push_back(record);
+        }
+    }
+
+    return true;
 }
 
 }  // namespace pathoverlay

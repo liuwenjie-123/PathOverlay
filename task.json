@@ -831,7 +831,7 @@
     {
       "id": "T037",
       "title": "实现 commit/discard 操作状态与启动恢复",
-      "status": "pending",
+      "status": "done",
       "description": "为 commit/discard 增加持久 operation 状态，服务启动时识别 running 或 failed 状态并保守恢复，避免中断后元数据和 shadow 状态不可判断。",
       "deliverables": [
         "元数据 operation 状态记录",
@@ -847,7 +847,8 @@
       ],
       "depends_on": [
         "T036"
-      ]
+      ],
+      "notes_ref": "docs/task-notes.md#T037"
     },
     {
       "id": "T038",
