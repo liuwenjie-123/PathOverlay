@@ -920,7 +920,7 @@
     {
       "id": "T041",
       "title": "增加 rule 级 changes 过滤与 dry-run",
-      "status": "pending",
+      "status": "done",
       "description": "降低 commit/discard 误操作风险，支持按 rule 查看变更，并在执行前进行只读预检。",
       "deliverables": [
         "changes --rule <id>",
@@ -938,7 +938,8 @@
       ],
       "depends_on": [
         "T039"
-      ]
+      ],
+      "notes_ref": "docs/task-notes.md#T041"
     },
     {
       "id": "T042",

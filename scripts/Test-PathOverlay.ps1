@@ -734,6 +734,22 @@ function Test-CommitDiscardByRuleDriverBehavior {
         $changesBefore = Invoke-Cli @("changes") "Failed to query changes before rule operations."
         Write-Check "changes include commit rule before commit" (Test-ChangesContainsRule $changesBefore $commitRule.Id $source1 $commitRule.Store "modified" $file1) $changesBefore
         Write-Check "changes include discard rule before discard" (Test-ChangesContainsRule $changesBefore $discardRule.Id $source2 $discardRule.Store "modified" $file2) $changesBefore
+        $commitRuleChanges = Invoke-Cli @("changes", "--rule", $commitRule.Id) "Failed to query changes for commit rule."
+        Write-Check "changes --rule includes selected rule only" ((Test-ChangesContainsRule $commitRuleChanges $commitRule.Id $source1 $commitRule.Store "modified" $file1) -and ($commitRuleChanges -notmatch [regex]::Escape($discardRule.Id))) $commitRuleChanges
+        $commitDryRun = Invoke-Cli @("commit", "--dry-run", "--rule", $commitRule.Id) "Commit dry-run failed."
+        Write-Check "commit dry-run reports write and backup paths" ($commitDryRun -match "commit dry-run" -and $commitDryRun -match "WRITE real=$([regex]::Escape($file1))" -and $commitDryRun -match "BACKUP real=$([regex]::Escape($file1))" -and $commitDryRun -match "backup=") $commitDryRun
+        $changesAfterCommitDryRun = Invoke-Cli @("changes") "Failed to query changes after commit dry-run."
+        Write-Check "commit dry-run preserves metadata" ((Test-ChangesContainsRule $changesAfterCommitDryRun $commitRule.Id $source1 $commitRule.Store "modified" $file1) -and (Test-ChangesContainsRule $changesAfterCommitDryRun $discardRule.Id $source2 $discardRule.Store "modified" $file2)) $changesAfterCommitDryRun
+        Invoke-Cli @("rule", "disable", "--rule", $commitRule.Id) "Failed to disable commit rule after dry-run." | Out-Null
+        Write-Check "commit dry-run does not write real file" ((Get-Content -LiteralPath $file1 -Raw) -match "commit-base") "rule=$($commitRule.Id) path=$file1"
+        Invoke-Cli @("rule", "enable", "--rule", $commitRule.Id) "Failed to re-enable commit rule after dry-run." | Out-Null
+        Write-Check "commit dry-run keeps shadow file" ((Get-Content -LiteralPath (ConvertTo-ShadowPath $commitRule.Store $file1) -Raw) -match "commit-overlay") "rule=$($commitRule.Id)"
+
+        $discardDryRun = Invoke-Cli @("discard", "--dry-run", "--rule", $discardRule.Id) "Discard dry-run failed."
+        Write-Check "discard dry-run reports cleanup scope" ($discardDryRun -match "discard dry-run" -and $discardDryRun -match "clear_changes=1" -and $discardDryRun -match "cleanup_shadow_root=" -and $discardDryRun -match "metadata_scope=rule:$([regex]::Escape($discardRule.Id))") $discardDryRun
+        $changesAfterDiscardDryRun = Invoke-Cli @("changes", "--rule", $discardRule.Id) "Failed to query changes after discard dry-run."
+        Write-Check "discard dry-run preserves metadata" (Test-ChangesContainsRule $changesAfterDiscardDryRun $discardRule.Id $source2 $discardRule.Store "modified" $file2) $changesAfterDiscardDryRun
+        Write-Check "discard dry-run keeps shadow file" ((Get-Content -LiteralPath (ConvertTo-ShadowPath $discardRule.Store $file2) -Raw) -match "discard-overlay") "rule=$($discardRule.Id)"
 
         $commitOutput = Invoke-Cli @("commit", "--rule", $commitRule.Id) "Commit by rule id failed."
         Write-Check "commit output includes rule context" ($commitOutput -match "rule=$([regex]::Escape($commitRule.Id))" -and $commitOutput -match "source=" -and $commitOutput -match "store=") $commitOutput

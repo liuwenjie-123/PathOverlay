@@ -196,10 +196,13 @@ CLI 示例：
 .\pathoverlay.exe rule add C:\Temp\AnotherSource --store D:\PathOverlayStore\AnotherSource
 .\pathoverlay.exe rule show
 .\pathoverlay.exe changes
+.\pathoverlay.exe changes --rule <id>
 .\pathoverlay.exe status
 .\pathoverlay.exe doctor
 .\pathoverlay.exe diagnostics collect
+.\pathoverlay.exe commit --dry-run --rule <id>
 .\pathoverlay.exe commit --rule <id>
+.\pathoverlay.exe discard --dry-run --rule <id>
 .\pathoverlay.exe discard --rule <id>
 .\pathoverlay.exe rule disable --rule <id>
 .\pathoverlay.exe rule enable --rule <id>
@@ -268,25 +271,30 @@ Remove-Item C:\Temp\PathOverlaySource\old.txt
 
 ```powershell
 .\pathoverlay.exe changes
+.\pathoverlay.exe changes --rule <id>
 ```
 
-`changes` 会按规则分组输出待处理变更，并包含 rule id、enabled 状态、source 和 store，便于在多规则场景下定位隔离数据。
+`changes` 会按规则分组输出待处理变更，并包含 rule id、enabled 状态、source 和 store，便于在多规则场景下定位隔离数据。`changes --rule <id>` 只显示指定规则的 pending changes。
 
 同一 rule 内可以 rename/move 文件或目录；源路径会在 overlay 视图中隐藏，目标路径从 shadow 读取。commit 前真实 source 不会被提前移动或删除。跨 rule、跨卷、目标已存在或 tombstone 后的 rename/move 会失败。
 
 按 rule id 丢弃该规则的覆盖层变更，不修改真实目录：
 
 ```powershell
+.\pathoverlay.exe discard --dry-run --rule rule-20260427-120000-1234-5678
 .\pathoverlay.exe discard --rule rule-20260427-120000-1234-5678
 ```
 
-`discard` 成功后会立即清空该 rule 的 pending changes，并先把旧 shadow 数据移出当前 `store\drive`，避免后续访问继续命中旧覆盖内容；较大的 shadow 目录会在后台继续删除。
+`discard --dry-run --rule <id>` 只读输出将清理的 change 数量、active shadow 根和 metadata 范围，不会修改真实 source、shadow 或 metadata。`discard` 成功后会立即清空该 rule 的 pending changes，并先把旧 shadow 数据移出当前 `store\drive`，避免后续访问继续命中旧覆盖内容；较大的 shadow 目录会在后台继续删除。
 
 按 rule id 应用该规则的覆盖层变更到真实目录：
 
 ```powershell
+.\pathoverlay.exe commit --dry-run --rule rule-20260427-120000-1234-5678
 .\pathoverlay.exe commit --rule rule-20260427-120000-1234-5678
 ```
+
+`commit --dry-run --rule <id>` 只读输出将写入、删除、rename 和备份的路径，并列出会阻塞提交的占用、冲突、缺失 shadow 或目标已存在问题；不会暂停规则、创建 operation、创建备份、写真实 source、移动 shadow 或清理 metadata。
 
 如果 commit 或 discard 检测到相关文件被用户进程占用，默认会失败并列出占用进程。确认可以关闭这些非关键用户进程时，显式追加：
 

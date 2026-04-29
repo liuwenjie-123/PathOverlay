@@ -232,3 +232,7 @@
 ## T040 - 增加诊断包收集与日志改进
 
 2026-04-29：已新增 CLI 命令 `pathoverlay diagnostics collect [--output <directory>]`。命令会生成诊断目录，写入 `rule-show.txt`、`changes.txt`、`status.txt`、`doctor.txt`、`driver-status.txt`、`scm-service.txt`、`scm-driver.txt`、`manifest.txt`，并在服务日志存在时复制 `PathOverlaySvc.log`；即使服务 IPC 不可用也会保留对应命令失败信息，便于离线排查。服务日志补充本地时间戳和 pid 字段。测试机脚本 `Test-PathOverlay.ps1` 在失败分支自动执行诊断收集并输出目录路径；`scripts/test.ps1` 增加无服务环境的诊断收集冒烟验证。README 和 `docs/Testing.md` 已补充入口说明。验证通过：`scripts/build.ps1`、`scripts/test.ps1`、`git diff --check`。
+
+## T041 - 增加 rule 级 changes 过滤与 dry-run
+
+2026-04-29：已新增 `pathoverlay changes --rule <id>`，服务端按指定 rule id 输出 pending changes，缺失 rule 会返回错误；无 `--rule` 时保留全量按 rule 分组输出。CLI 和服务端新增 `commit --dry-run --rule <id>` 与 `discard --dry-run --rule <id>`；dry-run 在创建 operation 记录、暂停 rule、写真实 source、移动 shadow 或清理 metadata 之前返回。commit dry-run 输出 write/delete/rename、backup root、预估 backup path，以及占用、真实文件冲突、缺失 shadow、rename target 已存在等 blocker；discard dry-run 输出将清理的 change 数量、active shadow 根、metadata scope 和 source unchanged 范围。测试机 E2E 脚本在按 rule commit/discard 场景中覆盖 `changes --rule` 和 dry-run 不修改真实文件、shadow 或 metadata。README 已补充命令示例和语义。验证通过：`scripts/build.ps1`、`scripts/test.ps1`、`scripts/Test-PathOverlay.ps1` 语法检查、`git diff --check`，以及 Debug `install-start.ps1 -SkipDriver -ResetData` 后手工服务集成验证 `changes --rule`、`commit --dry-run --rule`、`discard --dry-run --rule`；验证后已卸载服务并清理数据。

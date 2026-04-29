@@ -285,13 +285,13 @@ void PrintUsage() {
         << L"  pathoverlay rule show\n"
         << L"  pathoverlay debug service-write <path> <content>\n"
         << L"  pathoverlay debug prepare-cow --rule <id> <path>\n"
-        << L"  pathoverlay changes\n"
+        << L"  pathoverlay changes [--rule <id>]\n"
         << L"  pathoverlay status\n"
         << L"  pathoverlay doctor\n"
         << L"  pathoverlay diagnostics collect [--output <directory>]\n"
         << L"  pathoverlay driver status\n"
-        << L"  pathoverlay commit --rule <id> [--confirm-close]\n"
-        << L"  pathoverlay discard --rule <id> [--confirm-close]\n";
+        << L"  pathoverlay commit [--dry-run] --rule <id> [--confirm-close]\n"
+        << L"  pathoverlay discard [--dry-run] --rule <id> [--confirm-close]\n";
 }
 
 }  // namespace
@@ -337,7 +337,14 @@ int wmain(int argc, wchar_t* argv[]) {
     }
 
     if (command == L"changes") {
-        return SendRequest(L"changes");
+        if (argc == 2) {
+            return SendRequest(L"changes");
+        }
+        if (argc == 4 && std::wstring(argv[2]) == L"--rule") {
+            return SendRequest(L"changes --rule " + std::wstring(argv[3]));
+        }
+        PrintUsage();
+        return 1;
     }
     if (command == L"status") {
         return SendRequest(L"status");
@@ -363,31 +370,15 @@ int wmain(int argc, wchar_t* argv[]) {
         return 1;
     }
     if (command == L"commit") {
-        if ((argc == 4 || argc == 5) && std::wstring(argv[2]) == L"--rule") {
-            std::wstring request = L"commit --rule " + std::wstring(argv[3]);
-            if (argc == 5) {
-                if (std::wstring(argv[4]) != L"--confirm-close") {
-                    PrintUsage();
-                    return 1;
-                }
-                request += L" --confirm-close";
-            }
-            return SendRequest(request);
+        if (argc >= 3) {
+            return SendRequest(L"commit " + JoinArgs(2, argc, argv));
         }
         PrintUsage();
         return 1;
     }
     if (command == L"discard") {
-        if ((argc == 4 || argc == 5) && std::wstring(argv[2]) == L"--rule") {
-            std::wstring request = L"discard --rule " + std::wstring(argv[3]);
-            if (argc == 5) {
-                if (std::wstring(argv[4]) != L"--confirm-close") {
-                    PrintUsage();
-                    return 1;
-                }
-                request += L" --confirm-close";
-            }
-            return SendRequest(request);
+        if (argc >= 3) {
+            return SendRequest(L"discard " + JoinArgs(2, argc, argv));
         }
         PrintUsage();
         return 1;

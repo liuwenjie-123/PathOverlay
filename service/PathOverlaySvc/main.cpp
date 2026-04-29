@@ -578,6 +578,7 @@ struct ParsedRuleOperation {
     bool valid = false;
     std::wstring ruleId;
     bool confirmClose = false;
+    bool dryRun = false;
 };
 
 struct OccupyingProcess {
@@ -650,6 +651,10 @@ ParsedRuleOperation ParseRuleOperation(const std::wstring& request, const std::w
         }
         if (tokens[index] == L"--confirm-close") {
             parsed.confirmClose = true;
+            continue;
+        }
+        if (tokens[index] == L"--dry-run") {
+            parsed.dryRun = true;
             continue;
         }
         return ParsedRuleOperation{};
@@ -915,6 +920,238 @@ bool ShadowRequiredForDiagnostic(pathoverlay::ChangeState state) {
     return state == pathoverlay::ChangeState::kCreated ||
            state == pathoverlay::ChangeState::kModified ||
            state == pathoverlay::ChangeState::kRenamed;
+}
+
+std::wstring BackupPathForDryRun(
+    const pathoverlay::OverlayRule& rule,
+    const std::wstring& commitId,
+    const std::wstring& realPath) {
+    std::wstring normalizedReal = pathoverlay::NormalizePath(realPath);
+    if (normalizedReal.size() >= 2 && normalizedReal[1] == L':') {
+        normalizedReal.erase(1, 1);
+    }
+    return pathoverlay::NormalizePath(rule.store.empty() ? pathoverlay::DefaultStoreRoot() : rule.store) +
+        L"\\backups\\" + commitId + L"\\drive\\" + normalizedReal;
+}
+
+bool TryGetFileInfoForDryRun(
+    const std::wstring& path,
+    bool* exists,
+    unsigned long long* size,
+    std::wstring* lastWriteTime) {
+    WIN32_FILE_ATTRIBUTE_DATA data = {};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) {
+        const DWORD error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+            *exists = false;
+            *size = 0;
+            *lastWriteTime = L"";
+            return true;
+        }
+        return false;
+    }
+
+    ULARGE_INTEGER fileSize = {};
+    fileSize.LowPart = data.nFileSizeLow;
+    fileSize.HighPart = data.nFileSizeHigh;
+    ULARGE_INTEGER writeTime = {};
+    writeTime.LowPart = data.ftLastWriteTime.dwLowDateTime;
+    writeTime.HighPart = data.ftLastWriteTime.dwHighDateTime;
+    *exists = true;
+    *size = fileSize.QuadPart;
+    *lastWriteTime = std::to_wstring(writeTime.QuadPart);
+    return true;
+}
+
+bool OriginalInfoMatchesForDryRun(
+    const pathoverlay::ChangeRecord& record,
+    bool exists,
+    unsigned long long size,
+    const std::wstring& lastWriteTime) {
+    if (record.originalExists != exists) {
+        return false;
+    }
+    if (!exists) {
+        return true;
+    }
+    return record.originalSize == size && record.originalLastWriteTime == lastWriteTime;
+}
+
+void AppendChangeLine(std::wstringstream& output, const pathoverlay::ChangeRecord& record) {
+    output << L"\n  " << pathoverlay::ChangeStateToString(record.state) << L" " << record.realPath;
+    if (!record.targetPath.empty()) {
+        output << L" -> " << record.targetPath;
+    }
+}
+
+std::wstring FormatChangeInline(const pathoverlay::ChangeRecord& record) {
+    std::wstring line = pathoverlay::ChangeStateToString(record.state) + L" " + record.realPath;
+    if (!record.targetPath.empty()) {
+        line += L" -> " + record.targetPath;
+    }
+    return line;
+}
+
+std::wstring FormatChangesForRule(
+    const pathoverlay::OverlayRule& rule,
+    const std::vector<pathoverlay::ChangeRecord>& records) {
+    if (records.empty()) {
+        return L"OK no changes rule=" + rule.id;
+    }
+
+    std::wstringstream output;
+    output << L"OK"
+           << L"\nrule=" << rule.id
+           << L" enabled=" << (rule.enabled ? L"true" : L"false")
+           << L" source=" << rule.source
+           << L" store=" << rule.store;
+    for (const auto& record : records) {
+        AppendChangeLine(output, record);
+    }
+    return output.str();
+}
+
+std::wstring BuildCommitDryRunResponse(
+    const pathoverlay::OverlayRule& rule,
+    const std::wstring& commitId,
+    const std::wstring& backupRoot,
+    const std::vector<pathoverlay::ChangeRecord>& records) {
+    std::wstringstream output;
+    size_t blockers = 0;
+    size_t backups = 0;
+    output << L"OK commit dry-run"
+           << L" rule=" << rule.id
+           << L" source=" << rule.source
+           << L" store=" << rule.store
+           << L"\nchanges=" << FormatCount(records.size())
+           << L"\nbackup_root=" << backupRoot;
+
+    std::vector<OccupyingProcess> processes;
+    std::wstring occupancyError;
+    if (!QueryOccupyingProcesses(CollectOccupancyResourcePaths(records, true), &processes, &occupancyError)) {
+        ++blockers;
+        output << L"\nBLOCK occupancy_query error=" << occupancyError;
+    } else {
+        for (const auto& process : processes) {
+            ++blockers;
+            output << L"\nBLOCK occupied pid=" << process.processId
+                   << L" app=" << process.applicationName
+                   << L" type=" << ApplicationTypeText(process.applicationType)
+                   << L" protected=" << (process.protectedProcess ? L"true" : L"false");
+        }
+    }
+
+    for (const auto& record : records) {
+        bool realExists = false;
+        unsigned long long realSize = 0;
+        std::wstring realLastWriteTime;
+        if (!TryGetFileInfoForDryRun(record.realPath, &realExists, &realSize, &realLastWriteTime)) {
+            ++blockers;
+            output << L"\nBLOCK real_metadata path=" << record.realPath;
+        } else if (!OriginalInfoMatchesForDryRun(record, realExists, realSize, realLastWriteTime)) {
+            ++blockers;
+            output << L"\nBLOCK conflict real_changed path=" << record.realPath;
+        }
+
+        if (ShadowRequiredForDiagnostic(record.state)) {
+            bool shadowExists = false;
+            unsigned long long shadowSize = 0;
+            std::wstring shadowLastWriteTime;
+            if (!TryGetFileInfoForDryRun(record.shadowPath, &shadowExists, &shadowSize, &shadowLastWriteTime) ||
+                !shadowExists) {
+                ++blockers;
+                output << L"\nBLOCK missing_shadow path=" << record.realPath
+                       << L" shadow=" << record.shadowPath;
+            }
+        }
+
+        if (record.state == pathoverlay::ChangeState::kCreated ||
+            record.state == pathoverlay::ChangeState::kModified) {
+            output << L"\nWRITE real=" << record.realPath
+                   << L" shadow=" << record.shadowPath;
+            if (realExists) {
+                ++backups;
+                output << L"\nBACKUP real=" << record.realPath
+                       << L" backup=" << BackupPathForDryRun(rule, commitId, record.realPath);
+            }
+            continue;
+        }
+
+        if (record.state == pathoverlay::ChangeState::kDeleted ||
+            record.state == pathoverlay::ChangeState::kTombstone) {
+            output << L"\nDELETE real=" << record.realPath;
+            if (realExists) {
+                ++backups;
+                output << L"\nBACKUP real=" << record.realPath
+                       << L" backup=" << BackupPathForDryRun(rule, commitId, record.realPath);
+            }
+            continue;
+        }
+
+        if (record.state == pathoverlay::ChangeState::kRenamed) {
+            output << L"\nRENAME source=" << record.realPath
+                   << L" target=" << record.targetPath
+                   << L" shadow=" << record.shadowPath;
+            if (record.targetPath.empty()) {
+                ++blockers;
+                output << L"\nBLOCK missing_rename_target source=" << record.realPath;
+            } else {
+                bool targetExists = false;
+                unsigned long long targetSize = 0;
+                std::wstring targetLastWriteTime;
+                if (!TryGetFileInfoForDryRun(record.targetPath, &targetExists, &targetSize, &targetLastWriteTime)) {
+                    ++blockers;
+                    output << L"\nBLOCK target_metadata target=" << record.targetPath;
+                } else if (targetExists) {
+                    ++blockers;
+                    output << L"\nBLOCK rename_target_exists target=" << record.targetPath;
+                }
+            }
+            if (realExists) {
+                ++backups;
+                output << L"\nBACKUP real=" << record.realPath
+                       << L" backup=" << BackupPathForDryRun(rule, commitId, record.realPath);
+            }
+        }
+    }
+
+    output << L"\nsummary backups=" << FormatCount(backups)
+           << L" blockers=" << FormatCount(blockers);
+    return output.str();
+}
+
+std::wstring BuildDiscardDryRunResponse(
+    const pathoverlay::OverlayRule& rule,
+    const std::vector<pathoverlay::ChangeRecord>& records) {
+    const std::wstring driveRoot =
+        pathoverlay::NormalizePath(rule.store.empty() ? pathoverlay::DefaultStoreRoot() : rule.store) + L"\\drive";
+    std::wstringstream output;
+    output << L"OK discard dry-run"
+           << L" rule=" << rule.id
+           << L" source=" << rule.source
+           << L" store=" << rule.store
+           << L"\nclear_changes=" << FormatCount(records.size())
+           << L"\ncleanup_shadow_root=" << driveRoot
+           << L"\nmetadata_scope=rule:" << rule.id
+           << L"\nsource_unchanged=" << rule.source;
+
+    std::vector<OccupyingProcess> processes;
+    std::wstring occupancyError;
+    if (!QueryOccupyingProcesses(CollectOccupancyResourcePaths(records, false), &processes, &occupancyError)) {
+        output << L"\nWARN occupancy_query error=" << occupancyError;
+    } else {
+        for (const auto& process : processes) {
+            output << L"\nWARN occupied_shadow pid=" << process.processId
+                   << L" app=" << process.applicationName
+                   << L" type=" << ApplicationTypeText(process.applicationType)
+                   << L" protected=" << (process.protectedProcess ? L"true" : L"false");
+        }
+    }
+
+    for (const auto& record : records) {
+        output << L"\nCLEAR " << FormatChangeInline(record);
+    }
+    return output.str();
 }
 
 std::wstring BuildStatusResponse(pathoverlay::MetadataStore& metadata) {
@@ -1493,6 +1730,20 @@ std::wstring ProcessRequest(const std::wstring& request) {
         return result.success ? L"OK shadow=" + shadowPath : L"ERROR " + result.message;
     }
 
+    std::wstring changesRuleId;
+    if (TryParseRuleIdCommand(request, L"changes", &changesRuleId)) {
+        pathoverlay::OverlayRule rule;
+        if (!metadata.GetRule(changesRuleId, &rule, &error)) {
+            return L"ERROR rule not found: " + changesRuleId;
+        }
+
+        std::vector<pathoverlay::ChangeRecord> records;
+        if (!metadata.ListChanges(rule.id, &records, &error)) {
+            return L"ERROR " + error;
+        }
+        return FormatChangesForRule(rule, records);
+    }
+
     if (request == L"changes") {
         std::vector<pathoverlay::OverlayRule> rules;
         if (!metadata.ListRules(&rules, &error)) {
@@ -1517,10 +1768,7 @@ std::wstring ProcessRequest(const std::wstring& request) {
                    << L" source=" << rule.source
                    << L" store=" << rule.store;
             for (const auto& record : records) {
-                output << L"\n  " << pathoverlay::ChangeStateToString(record.state) << L" " << record.realPath;
-                if (!record.targetPath.empty()) {
-                    output << L" -> " << record.targetPath;
-                }
+                AppendChangeLine(output, record);
             }
         }
 
@@ -1551,6 +1799,17 @@ std::wstring ProcessRequest(const std::wstring& request) {
             ? pathoverlay::NormalizePath(rule.store.empty() ? pathoverlay::DefaultStoreRoot() : rule.store) +
                   L"\\backups\\" + operationId
             : L"";
+
+        if (operation.dryRun) {
+            std::vector<pathoverlay::ChangeRecord> records;
+            if (!metadata.ListChanges(rule.id, &records, &error)) {
+                return L"ERROR " + error;
+            }
+            return isCommit
+                ? BuildCommitDryRunResponse(rule, operationId, backupRoot, records)
+                : BuildDiscardDryRunResponse(rule, records);
+        }
+
         if (!StartOperationRecord(metadata, operationId, rule, operationName, backupRoot, &error)) {
             return L"ERROR failed to start " + operationName + L" operation: " + error;
         }
