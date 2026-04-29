@@ -25,6 +25,7 @@ public:
     OperationResult ListChanges(const std::wstring& ruleId, std::vector<ChangeRecord>* records);
     OperationResult Commit(const OverlayRule& rule, const std::wstring& commitId);
     OperationResult Discard(const OverlayRule& rule);
+    OperationResult ProcessCleanupQueue();
 
 private:
     MetadataStore& metadata_;

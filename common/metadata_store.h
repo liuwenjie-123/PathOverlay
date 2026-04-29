@@ -51,6 +51,17 @@ struct OperationRecord {
     bool ruleWasEnabled = false;
 };
 
+struct CleanupRecord {
+    std::wstring id;
+    std::wstring ruleId;
+    std::wstring path;
+    std::wstring status;
+    int attempts = 0;
+    std::wstring lastError;
+    std::wstring createdAt;
+    std::wstring updatedAt;
+};
+
 class MetadataStore {
 public:
     MetadataStore();
@@ -86,6 +97,15 @@ public:
         std::wstring* error);
     bool ListOperations(std::vector<OperationRecord>* records, std::wstring* error);
     bool RecoverInterruptedOperations(std::vector<OperationRecord>* recovered, std::wstring* error);
+    bool AddCleanupRecord(const CleanupRecord& record, std::wstring* error);
+    bool UpdateCleanupRecord(
+        const std::wstring& cleanupId,
+        const std::wstring& status,
+        int attempts,
+        const std::wstring& lastError,
+        const std::wstring& updatedAt,
+        std::wstring* error);
+    bool ListCleanupRecords(std::vector<CleanupRecord>* records, std::wstring* error);
 
 private:
     void* sqliteLibrary_ = nullptr;

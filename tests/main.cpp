@@ -582,6 +582,33 @@ int wmain() {
         ok &= Expect(operations.Discard(discardRule).success, L"discard should succeed");
         ok &= Expect(GetFileAttributesW(discardShadow.c_str()) == INVALID_FILE_ATTRIBUTES,
                      L"discard should immediately remove old shadow from active drive path");
+        std::vector<pathoverlay::CleanupRecord> cleanupRecords;
+        ok &= Expect(metadata.ListCleanupRecords(&cleanupRecords, &sqliteError),
+                     L"discard cleanup records should be queryable");
+        bool pendingCleanupFound = false;
+        std::wstring cleanupPath;
+        for (const auto& record : cleanupRecords) {
+            if (record.ruleId == discardRule.id && record.status == L"pending") {
+                pendingCleanupFound = true;
+                cleanupPath = record.path;
+            }
+        }
+        ok &= Expect(pendingCleanupFound && !cleanupPath.empty() && IsDirectory(cleanupPath),
+                     L"discard should persist pending cleanup directory");
+        ok &= Expect(operations.ProcessCleanupQueue().success,
+                     L"cleanup queue should be processed after restart");
+        ok &= Expect(GetFileAttributesW(cleanupPath.c_str()) == INVALID_FILE_ATTRIBUTES,
+                     L"cleanup processing should delete detached shadow directory");
+        cleanupRecords.clear();
+        ok &= Expect(metadata.ListCleanupRecords(&cleanupRecords, &sqliteError),
+                     L"cleanup records should remain queryable after processing");
+        bool cleanupDoneFound = false;
+        for (const auto& record : cleanupRecords) {
+            if (record.ruleId == discardRule.id && record.path == pathoverlay::NormalizePath(cleanupPath) && record.status == L"done") {
+                cleanupDoneFound = true;
+            }
+        }
+        ok &= Expect(cleanupDoneFound, L"cleanup processing should mark record done");
         ok &= Expect(ReadTextFile(discardReal) == "keep", L"discard should not modify real file");
         ok &= Expect(ReadTextFile(discardRenameSource) == "discard-rename",
                      L"discard should keep renamed source real file");
@@ -615,6 +642,33 @@ int wmain() {
                      L"discard should keep renamed source real directory");
         ok &= Expect(GetFileAttributesW(discardDirectoryRenameTarget.c_str()) == INVALID_FILE_ATTRIBUTES,
                      L"discard should not create renamed target real directory");
+        pathoverlay::CleanupRecord badCleanup;
+        badCleanup.id = L"cleanup-outside-store";
+        badCleanup.ruleId = discardRule.id;
+        badCleanup.path = discardSource + L"\\must-not-delete.txt";
+        badCleanup.status = L"pending";
+        badCleanup.attempts = 0;
+        badCleanup.createdAt = L"2026-04-29T00:02:00Z";
+        badCleanup.updatedAt = L"2026-04-29T00:02:00Z";
+        ok &= Expect(WriteTextFile(badCleanup.path, "source-data"),
+                     L"cleanup safety source file should be created");
+        ok &= Expect(metadata.AddCleanupRecord(badCleanup, &sqliteError),
+                     L"bad cleanup record should be persisted for diagnostics");
+        ok &= Expect(operations.ProcessCleanupQueue().success,
+                     L"bad cleanup record should be handled without aborting queue processing");
+        cleanupRecords.clear();
+        ok &= Expect(metadata.ListCleanupRecords(&cleanupRecords, &sqliteError),
+                     L"failed cleanup records should be queryable");
+        bool failedCleanupFound = false;
+        for (const auto& record : cleanupRecords) {
+            if (record.id == badCleanup.id && record.status == L"failed" &&
+                record.lastError.find(L"outside rule store") != std::wstring::npos) {
+                failedCleanupFound = true;
+            }
+        }
+        ok &= Expect(failedCleanupFound, L"unsafe cleanup should remain diagnosable as failed");
+        ok &= Expect(ReadTextFile(badCleanup.path) == "source-data",
+                     L"cleanup queue should not delete real source paths");
 
         const std::wstring conflictSource = TempPathOverlayDir(L"conflict_source");
         const std::wstring conflictStore = TempPathOverlayDir(L"conflict_store");

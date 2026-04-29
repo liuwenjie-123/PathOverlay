@@ -5,7 +5,6 @@
 #include <cwctype>
 #include <filesystem>
 #include <sstream>
-#include <thread>
 
 namespace pathoverlay {
 namespace {
@@ -104,11 +103,28 @@ std::wstring DiscardCleanupRoot(const OverlayRule& rule) {
     return NormalizePath(rule.store.empty() ? DefaultStoreRoot() : rule.store) + L"\\" + stream.str();
 }
 
-void RemoveAllDetached(const std::wstring& path) {
-    std::thread([path]() {
-        std::error_code ignored;
-        fs::remove_all(path, ignored);
-    }).detach();
+std::wstring ManualTimestamp() {
+    SYSTEMTIME time = {};
+    GetSystemTime(&time);
+
+    std::wstringstream stream;
+    stream << time.wYear
+           << L"-" << (time.wMonth < 10 ? L"0" : L"") << time.wMonth
+           << L"-" << (time.wDay < 10 ? L"0" : L"") << time.wDay
+           << L"T" << (time.wHour < 10 ? L"0" : L"") << time.wHour
+           << L":" << (time.wMinute < 10 ? L"0" : L"") << time.wMinute
+           << L":" << (time.wSecond < 10 ? L"0" : L"") << time.wSecond
+           << L"Z";
+    return stream.str();
+}
+
+std::wstring MakeCleanupId(const OverlayRule& rule) {
+    std::wstringstream stream;
+    stream << L"cleanup-"
+           << SafePathSegment(rule.id)
+           << L"-" << GetCurrentProcessId()
+           << L"-" << GetTickCount64();
+    return stream.str();
 }
 
 std::wstring BackupPathFor(const OverlayRule& rule, const std::wstring& commitId, const std::wstring& realPath) {
@@ -967,8 +983,109 @@ OperationResult OverlayOperations::Discard(const OverlayRule& rule) {
         return Fail(error);
     }
     if (!cleanupRoot.empty()) {
-        RemoveAllDetached(cleanupRoot);
+        const std::wstring now = ManualTimestamp();
+        CleanupRecord cleanup;
+        cleanup.id = MakeCleanupId(rule);
+        cleanup.ruleId = rule.id;
+        cleanup.path = cleanupRoot;
+        cleanup.status = L"pending";
+        cleanup.attempts = 0;
+        cleanup.lastError = L"";
+        cleanup.createdAt = now;
+        cleanup.updatedAt = now;
+        if (!metadata_.AddCleanupRecord(cleanup, &error)) {
+            return Fail(error);
+        }
     }
+    return Ok();
+}
+
+OperationResult OverlayOperations::ProcessCleanupQueue() {
+    std::wstring error;
+    std::vector<CleanupRecord> records;
+    if (!metadata_.ListCleanupRecords(&records, &error)) {
+        return Fail(error);
+    }
+
+    for (const CleanupRecord& record : records) {
+        if (record.status != L"pending" && record.status != L"running") {
+            continue;
+        }
+
+        OverlayRule rule;
+        if (!metadata_.GetRule(record.ruleId, &rule, &error)) {
+            const std::wstring now = ManualTimestamp();
+            std::wstring ignoredError;
+            metadata_.UpdateCleanupRecord(
+                record.id,
+                L"failed",
+                record.attempts + 1,
+                L"cleanup rule was not found",
+                now,
+                &ignoredError);
+            continue;
+        }
+
+        const std::wstring cleanupPath = NormalizePath(record.path);
+        const std::wstring storeRoot = NormalizePath(rule.store.empty() ? DefaultStoreRoot() : rule.store);
+        if (!IsSamePathOrDescendant(storeRoot, cleanupPath) || _wcsicmp(storeRoot.c_str(), cleanupPath.c_str()) == 0) {
+            const std::wstring now = ManualTimestamp();
+            std::wstring ignoredError;
+            metadata_.UpdateCleanupRecord(
+                record.id,
+                L"failed",
+                record.attempts + 1,
+                L"cleanup path is outside rule store",
+                now,
+                &ignoredError);
+            continue;
+        }
+
+        const int attempts = record.attempts + 1;
+        const std::wstring runningAt = ManualTimestamp();
+        if (!metadata_.UpdateCleanupRecord(record.id, L"running", attempts, L"", runningAt, &error)) {
+            return Fail(error);
+        }
+
+        std::error_code errorCode;
+        if (!fs::exists(cleanupPath, errorCode)) {
+            const std::wstring doneAt = ManualTimestamp();
+            if (!metadata_.UpdateCleanupRecord(record.id, L"done", attempts, L"", doneAt, &error)) {
+                return Fail(error);
+            }
+            continue;
+        }
+        if (errorCode) {
+            const std::wstring failedAt = ManualTimestamp();
+            std::wstring ignoredError;
+            metadata_.UpdateCleanupRecord(
+                record.id,
+                L"failed",
+                attempts,
+                L"failed to inspect cleanup path",
+                failedAt,
+                &ignoredError);
+            continue;
+        }
+
+        fs::remove_all(cleanupPath, errorCode);
+        const std::wstring finishedAt = ManualTimestamp();
+        if (errorCode) {
+            std::wstring ignoredError;
+            metadata_.UpdateCleanupRecord(
+                record.id,
+                L"failed",
+                attempts,
+                L"failed to delete cleanup path",
+                finishedAt,
+                &ignoredError);
+            continue;
+        }
+        if (!metadata_.UpdateCleanupRecord(record.id, L"done", attempts, L"", finishedAt, &error)) {
+            return Fail(error);
+        }
+    }
+
     return Ok();
 }
 

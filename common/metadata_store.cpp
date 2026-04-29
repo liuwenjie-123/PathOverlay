@@ -294,6 +294,17 @@ bool MetadataStore::Initialize(std::wstring* error) {
         "  error TEXT NOT NULL,"
         "  rule_was_enabled INTEGER NOT NULL DEFAULT 0,"
         "  FOREIGN KEY(rule_id) REFERENCES rules(id) ON DELETE CASCADE"
+        ");"
+        "CREATE TABLE IF NOT EXISTS cleanup_queue ("
+        "  id TEXT PRIMARY KEY,"
+        "  rule_id TEXT NOT NULL,"
+        "  path TEXT NOT NULL,"
+        "  status TEXT NOT NULL,"
+        "  attempts INTEGER NOT NULL,"
+        "  last_error TEXT NOT NULL,"
+        "  created_at TEXT NOT NULL,"
+        "  updated_at TEXT NOT NULL,"
+        "  FOREIGN KEY(rule_id) REFERENCES rules(id) ON DELETE CASCADE"
         ");";
 
     if (!Exec(static_cast<sqlite3*>(database_), kSchema, error)) {
@@ -833,6 +844,104 @@ bool MetadataStore::RecoverInterruptedOperations(std::vector<OperationRecord>* r
     }
 
     return true;
+}
+
+bool MetadataStore::AddCleanupRecord(const CleanupRecord& record, std::wstring* error) {
+    static constexpr char kSql[] =
+        "INSERT INTO cleanup_queue(id, rule_id, path, status, attempts, last_error, created_at, updated_at) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?, ?);";
+
+    sqlite3_stmt* statement = nullptr;
+    sqlite3* db = static_cast<sqlite3*>(database_);
+    if (g_sqlite.prepare_v2(db, kSql, -1, &statement, nullptr) != SQLITE_OK_VALUE) {
+        *error = LastErrorMessage(db, L"failed to prepare cleanup insert");
+        return false;
+    }
+
+    const bool bindOk = BindText(statement, 1, record.id) &&
+                        BindText(statement, 2, record.ruleId) &&
+                        BindText(statement, 3, NormalizePath(record.path)) &&
+                        BindText(statement, 4, record.status) &&
+                        g_sqlite.bind_int(statement, 5, record.attempts) == SQLITE_OK_VALUE &&
+                        BindText(statement, 6, record.lastError) &&
+                        BindText(statement, 7, record.createdAt) &&
+                        BindText(statement, 8, record.updatedAt);
+    const bool ok = bindOk && g_sqlite.step(statement) == SQLITE_DONE_VALUE;
+    if (!ok && error != nullptr) {
+        *error = LastErrorMessage(db, L"failed to insert cleanup record");
+    }
+    g_sqlite.finalize(statement);
+    return ok;
+}
+
+bool MetadataStore::UpdateCleanupRecord(
+    const std::wstring& cleanupId,
+    const std::wstring& status,
+    int attempts,
+    const std::wstring& lastError,
+    const std::wstring& updatedAt,
+    std::wstring* error) {
+    static constexpr char kSql[] =
+        "UPDATE cleanup_queue SET status = ?, attempts = ?, last_error = ?, updated_at = ? WHERE id = ?;";
+
+    sqlite3_stmt* statement = nullptr;
+    sqlite3* db = static_cast<sqlite3*>(database_);
+    if (g_sqlite.prepare_v2(db, kSql, -1, &statement, nullptr) != SQLITE_OK_VALUE) {
+        *error = LastErrorMessage(db, L"failed to prepare cleanup update");
+        return false;
+    }
+
+    const bool bindOk = BindText(statement, 1, status) &&
+                        g_sqlite.bind_int(statement, 2, attempts) == SQLITE_OK_VALUE &&
+                        BindText(statement, 3, lastError) &&
+                        BindText(statement, 4, updatedAt) &&
+                        BindText(statement, 5, cleanupId);
+    const bool ok = bindOk && g_sqlite.step(statement) == SQLITE_DONE_VALUE;
+    if (!ok && error != nullptr) {
+        *error = LastErrorMessage(db, L"failed to update cleanup record");
+    }
+    g_sqlite.finalize(statement);
+    return ok;
+}
+
+bool MetadataStore::ListCleanupRecords(std::vector<CleanupRecord>* records, std::wstring* error) {
+    static constexpr char kSql[] =
+        "SELECT id, rule_id, path, status, attempts, last_error, created_at, updated_at "
+        "FROM cleanup_queue ORDER BY created_at, id;";
+
+    records->clear();
+    sqlite3_stmt* statement = nullptr;
+    sqlite3* db = static_cast<sqlite3*>(database_);
+    if (g_sqlite.prepare_v2(db, kSql, -1, &statement, nullptr) != SQLITE_OK_VALUE) {
+        *error = LastErrorMessage(db, L"failed to prepare cleanup list");
+        return false;
+    }
+
+    while (true) {
+        const int step = g_sqlite.step(statement);
+        if (step == SQLITE_DONE_VALUE) {
+            g_sqlite.finalize(statement);
+            return true;
+        }
+        if (step != SQLITE_ROW_VALUE) {
+            if (error != nullptr) {
+                *error = LastErrorMessage(db, L"failed to list cleanup records");
+            }
+            g_sqlite.finalize(statement);
+            return false;
+        }
+
+        CleanupRecord record;
+        record.id = ColumnText(statement, 0);
+        record.ruleId = ColumnText(statement, 1);
+        record.path = ColumnText(statement, 2);
+        record.status = ColumnText(statement, 3);
+        record.attempts = g_sqlite.column_int(statement, 4);
+        record.lastError = ColumnText(statement, 5);
+        record.createdAt = ColumnText(statement, 6);
+        record.updatedAt = ColumnText(statement, 7);
+        records->push_back(record);
+    }
 }
 
 }  // namespace pathoverlay

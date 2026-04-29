@@ -1093,6 +1093,12 @@ bool InitializeRuntime() {
             L" error=" + operation.error);
     }
 
+    pathoverlay::OverlayOperations operations(metadata);
+    const pathoverlay::OperationResult cleanupResult = operations.ProcessCleanupQueue();
+    if (!cleanupResult.success) {
+        WriteLog(L"cleanup: failed to process queue: " + cleanupResult.message);
+    }
+
     WriteLog(L"service runtime initialized");
     ConnectDriverPort();
     SyncDriverRuleCache(metadata);

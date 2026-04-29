@@ -853,7 +853,7 @@
     {
       "id": "T038",
       "title": "持久化 discard 后台清理队列",
-      "status": "pending",
+      "status": "done",
       "description": "将 discard 后 detached 后台删除改为可追踪 cleanup queue，服务重启后继续清理或报告失败。",
       "deliverables": [
         "cleanup 队列元数据",
@@ -869,7 +869,8 @@
       ],
       "depends_on": [
         "T037"
-      ]
+      ],
+      "notes_ref": "docs/task-notes.md#T038"
     },
     {
       "id": "T039",

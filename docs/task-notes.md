@@ -216,3 +216,9 @@
 ## T037 - 实现 commit/discard 操作状态与启动恢复
 
 2026-04-29：已新增 `operations` 元数据表和 `OperationRecord`，记录 operation id、rule id、action、status、phase、时间、backup root、错误和 operation 前 rule 启用状态。服务端 commit/discard 会在执行前创建 running operation，并在 prechecked、rule_paused、applying、cleanup、restoring_rule、finished 或 failed 阶段更新状态；commit 复用 operation id 作为 commit id，便于日志关联。服务启动时调用 `RecoverInterruptedOperations`，把遗留 `running` 的 applying/cleanup 操作标记为 `failed`，其他阶段标记为 `recoverable`，保留 pending changes 和 shadow 数据，并只在 operation 前 rule 原本启用时恢复 rule enabled 状态。新增用户态测试覆盖 running operation 恢复为 failed/recoverable、恢复状态可由 metadata 查询、pending changes 和 shadow 保留、恢复后同一 rule 可再次 commit。验证通过：`task.json` JSON 解析、`git diff --check`、`scripts/build.ps1`、`scripts/test.ps1`。
+
+<a id="T038"></a>
+
+## T038 - 持久化 discard 后台清理队列
+
+2026-04-29：已新增 `cleanup_queue` 元数据表和 `CleanupRecord`，记录 cleanup id、rule id、detached shadow path、status、attempts、last_error 和时间字段。`OverlayOperations::Discard` 仍先把 active `store\drive` 快速 rename 到 `.discard-cleanup-*`，确保 discard 返回后旧 active shadow 不再参与重定向；随后删除该 rule 的 changes，并把 detached cleanup 目录以 `pending` 状态写入队列，不再使用不可追踪 detached thread。新增 `OverlayOperations::ProcessCleanupQueue`，服务启动时会处理 `pending` 或旧 `running` cleanup：删除成功标记 `done`，失败标记 `failed` 并保留错误；删除前校验 cleanup 路径必须是对应 rule store 的子路径，避免误删真实 source。用户态测试覆盖 discard 后 active drive 立即移走、队列处理删除 detached 目录并标记 done、越界 cleanup 路径标记 failed 且不删除真实 source 文件。验证通过：`task.json` JSON 解析、`git diff --check`、`scripts/build.ps1`、`scripts/test.ps1`。
