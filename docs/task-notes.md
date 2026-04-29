@@ -275,6 +275,8 @@
 
 2026-04-29：协议新增 `PathOverlayPathStatePassthrough`。服务端 `QueryPath` 在发现请求路径位于 source 内 reparse subtree 时返回 passthrough；驱动 `PreCreate`、QueryOpen/NetworkQueryOpen、delete 和 rename 链路收到 passthrough 后不执行 COW、不重定向、不记录 tombstone 或 rename，让 Windows 默认处理真实路径。测试机 E2E 脚本新增 source 内 junction 场景，验证 junction 写入直通 target、shadow 不创建 junction subtree、changes 不包含 junction 路径、doctor 输出 passthrough。验证通过：`scripts/build.ps1`、`scripts/build.ps1 -Configuration Release`、`scripts/package-test-machine.ps1 -Configuration Release`、`scripts/Test-PathOverlay.ps1` 语法检查。当前启动项未显示 `testsigning Yes`，本机会话无法加载测试签名驱动执行 `test-machine-package/Run-PathOverlay-Test.cmd`，真实驱动 E2E 需在启用 test-signing 的测试机复跑。
 
+2026-04-29 复查测试机日志 `PathOverlay-Test-20260429-155428.log`：新增 junction 场景失败于 `junction subtree is not copied to shadow`。日志显示 `mklink /J` 创建 junction 时，驱动先对 `source\junction-out` 执行 copy-on-write，生成 shadow 目录；随后写入 `junction-out\outside.txt` 虽然直通到了 target，但 shadow 已存在导致断言失败。已修复驱动 `PreCreate`：带 `FILE_OPEN_REPARSE_POINT` 的打开/创建请求直接直通，不进入 COW 或目录视图逻辑，使 junction/symlink 自身创建不被 overlay 接管。真实驱动 E2E 需重新打包后在测试机复跑。
+
 <a id="T048"></a>
 
 ## T048 - 更新 reparse 兼容性测试与发布文档

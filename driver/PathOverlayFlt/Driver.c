@@ -619,6 +619,14 @@ PathOverlayIsDirectoryOpen(
 }
 
 static BOOLEAN
+PathOverlayIsReparsePointOpen(
+    _In_ PFLT_CALLBACK_DATA Data
+    )
+{
+    return (Data->Iopb->Parameters.Create.Options & FILE_OPEN_REPARSE_POINT) != 0;
+}
+
+static BOOLEAN
 PathOverlayNtPathExists(
     _In_ PCUNICODE_STRING NtPath
     )
@@ -1013,6 +1021,9 @@ PathOverlayPreCreate(
 
     requestorProcessId = FltGetRequestorProcessId(Data);
     if (PathOverlayIsServiceProcess(requestorProcessId)) {
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+    if (PathOverlayIsReparsePointOpen(Data)) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
