@@ -627,6 +627,15 @@ PathOverlayIsReparsePointOpen(
 }
 
 static BOOLEAN
+PathOverlayIsSameUnicodeStringInsensitive(
+    _In_ PCUNICODE_STRING Left,
+    _In_ PCUNICODE_STRING Right
+    )
+{
+    return RtlCompareUnicodeString(Left, Right, TRUE) == 0;
+}
+
+static BOOLEAN
 PathOverlayNtPathExists(
     _In_ PCUNICODE_STRING NtPath
     )
@@ -1086,6 +1095,9 @@ PathOverlayPreCreate(
     }
 
     writeIntent = PathOverlayHasWriteIntent(Data);
+    if (writeIntent && PathOverlayIsSameUnicodeStringInsensitive(&source, &nameInfo->Name)) {
+        writeIntent = FALSE;
+    }
     if (!writeIntent && PathOverlayIsDirectoryOpen(Data)) {
         if (!PathOverlayNtPathExists(&nameInfo->Name) && !PathOverlayNtPathExists(&shadowPath)) {
             FltReleaseFileNameInformation(nameInfo);

@@ -279,6 +279,8 @@
 
 2026-04-29 复查测试机日志 `PathOverlay-Test-20260429-155856.log`：失败点变为旧目录 tombstone 场景 `tombstoned directory is hidden`，不是前一次 junction shadow 断言。服务日志显示 `delete-dir state=tombstone`，说明服务端 metadata 已记录 tombstone，但驱动此前对所有 `FILE_OPEN_REPARSE_POINT` create 直接直通，导致带该标志的存在性查询绕过 tombstone。已收窄修复：`PreCreate` 先执行 `QueryPath` 并优先处理 tombstone/passthrough；只有非 tombstone 且非服务端 passthrough 的 reparse-point open 才直通，避免破坏 tombstone 隐藏语义。
 
+2026-04-29 复查测试机日志 `PathOverlay-Test-20260429-160943.log`：失败点为文件 rename 场景 `renamed target path is visible`。服务已成功记录 `before.txt -> after.txt`，且 QueryPath 对 target 返回 `renamed-shadow`，但更早日志显示驱动对 rule source 根目录执行了 copy-on-write，生成了 source 根目录级 shadow，干扰后续目录视图和 renamed target 可见性。已修复驱动 `PreCreate`：当命中路径就是 rule source 根本身时，即使 create 参数带写意图，也不执行 COW；source 根仍按目录视图逻辑处理。
+
 <a id="T048"></a>
 
 ## T048 - 更新 reparse 兼容性测试与发布文档
