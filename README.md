@@ -198,6 +198,7 @@ CLI 示例：
 .\pathoverlay.exe changes
 .\pathoverlay.exe status
 .\pathoverlay.exe doctor
+.\pathoverlay.exe diagnostics collect
 .\pathoverlay.exe commit --rule <id>
 .\pathoverlay.exe discard --rule <id>
 .\pathoverlay.exe rule disable --rule <id>
@@ -337,6 +338,7 @@ sc.exe delete PathOverlayFlt
 ## 故障排查
 
 - `PathOverlaySvc is unavailable`：确认服务已安装并启动，或查看 `%ProgramData%\PathOverlay\PathOverlaySvc.log`。
+- 需要集中定位问题：运行 `pathoverlay diagnostics collect [--output <目录>]`，诊断目录会包含规则、changes、status、doctor、driver status、SCM 状态和服务日志。
 - `driver status` 失败：确认 `PathOverlayFlt` 已加载，驱动签名可信，test-signing 已启用并重启。
 - 驱动无法加载：确认管理员权限、WDK 构建产物、测试证书导入和 `bcdedit /set testsigning on`。
 - `rule add` 失败并提示规则重叠：检查新 source 是否与已有 source 互相包含，或 source/store 是否互相嵌套。

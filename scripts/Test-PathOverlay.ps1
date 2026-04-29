@@ -159,6 +159,30 @@ function Write-ServiceDiagnostics {
         Out-Host
 }
 
+function Invoke-DiagnosticsCollect {
+    Write-Step "Collecting PathOverlay diagnostics package"
+
+    if (-not (Test-Path -LiteralPath $cliPath)) {
+        Write-Host "pathoverlay.exe was not found; diagnostics collect skipped: $cliPath"
+        return
+    }
+
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+    $diagnosticsPath = Join-Path $logDir ("PathOverlay-Diagnostics-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+    try {
+        $output = & $cliPath diagnostics collect --output $diagnosticsPath 2>&1
+        $exitCode = $LASTEXITCODE
+        $output | Out-Host
+        if ($exitCode -eq 0) {
+            Write-Host "Diagnostics package: $diagnosticsPath" -ForegroundColor Yellow
+        } else {
+            Write-Host "Diagnostics collect failed with ExitCode=$exitCode. Partial path: $diagnosticsPath" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "Diagnostics collect failed: $($_.Exception.Message). Partial path: $diagnosticsPath" -ForegroundColor Yellow
+    }
+}
+
 function Stop-PathOverlayService {
     $service = Get-Service -Name $svcName -ErrorAction SilentlyContinue
     if ($null -ne $service -and $service.Status -ne "Stopped") {
@@ -829,6 +853,7 @@ try {
     Write-Step "Result"
     Write-Host $_.Exception.Message -ForegroundColor Red
     Write-ServiceDiagnostics
+    Invoke-DiagnosticsCollect
     throw
 } finally {
     Cleanup

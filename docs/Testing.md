@@ -108,3 +108,5 @@ and the observed command output when that context is available.
 
 The script writes a transcript under `test-machine-package\logs\` and performs
 service and driver cleanup unless `-SkipCleanup` is used.
+On failure, it also runs `pathoverlay diagnostics collect --output <logs path>`
+and prints the diagnostics directory path.

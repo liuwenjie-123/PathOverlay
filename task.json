@@ -898,7 +898,7 @@
     {
       "id": "T040",
       "title": "增加诊断包收集与日志改进",
-      "status": "pending",
+      "status": "done",
       "description": "统一收集服务日志、规则、changes、driver status、operation、cleanup 状态和测试环境信息，降低测试机和用户环境问题定位成本。",
       "deliverables": [
         "pathoverlay diagnostics collect 命令",
@@ -914,7 +914,8 @@
       ],
       "depends_on": [
         "T039"
-      ]
+      ],
+      "notes_ref": "docs/task-notes.md#T040"
     },
     {
       "id": "T041",

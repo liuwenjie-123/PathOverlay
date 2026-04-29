@@ -87,7 +87,20 @@ void WriteLog(const std::wstring& message) {
 
     std::wofstream log(path, std::ios::app);
     if (log) {
-        log << message << L"\n";
+        SYSTEMTIME time = {};
+        GetLocalTime(&time);
+        log << time.wYear << L"-";
+        log.width(2);
+        log.fill(L'0');
+        log << time.wMonth << L"-";
+        log.width(2);
+        log << time.wDay << L" ";
+        log.width(2);
+        log << time.wHour << L":";
+        log.width(2);
+        log << time.wMinute << L":";
+        log.width(2);
+        log << time.wSecond << L" pid=" << GetCurrentProcessId() << L" " << message << L"\n";
     }
 }
 

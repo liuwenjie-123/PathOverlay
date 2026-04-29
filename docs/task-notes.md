@@ -228,3 +228,7 @@
 ## T039 - 新增 status 和 doctor 诊断命令
 
 2026-04-29：已新增 CLI/服务 IPC 命令 `pathoverlay status` 和 `pathoverlay doctor`。`status` 输出服务连接、驱动连接、规则总数和启用数量、pending changes 总数、每条 rule 的 changes 数、cleanup pending/running/failed/done 计数以及最近 operation 摘要。`doctor` 默认只读扫描 failed/recoverable/running operation、failed cleanup、缺失 cleanup 路径、缺失 rule source、非法 store 类型和 created/modified/renamed change 缺失 shadow，并以 `ERROR`/`WARN` 行输出；不修改 metadata、shadow 或真实 source。README 已补充 `status`/`doctor` 当前能力并从未完成能力中移除。验证通过：`task.json` JSON 解析、`git diff --check`、`scripts/build.ps1`、`scripts/test.ps1`，以及 Debug `install-start.ps1 -SkipDriver -ResetData` 后手工执行 `pathoverlay status` 和 `pathoverlay doctor`，输出分别包含 `service=connected`、`driver=not_connected`、规则/cleanup/operation 摘要和 `no issues`；验证后已卸载服务并清理数据。
+
+## T040 - 增加诊断包收集与日志改进
+
+2026-04-29：已新增 CLI 命令 `pathoverlay diagnostics collect [--output <directory>]`。命令会生成诊断目录，写入 `rule-show.txt`、`changes.txt`、`status.txt`、`doctor.txt`、`driver-status.txt`、`scm-service.txt`、`scm-driver.txt`、`manifest.txt`，并在服务日志存在时复制 `PathOverlaySvc.log`；即使服务 IPC 不可用也会保留对应命令失败信息，便于离线排查。服务日志补充本地时间戳和 pid 字段。测试机脚本 `Test-PathOverlay.ps1` 在失败分支自动执行诊断收集并输出目录路径；`scripts/test.ps1` 增加无服务环境的诊断收集冒烟验证。README 和 `docs/Testing.md` 已补充入口说明。验证通过：`scripts/build.ps1`、`scripts/test.ps1`、`git diff --check`。
