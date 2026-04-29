@@ -67,6 +67,20 @@ PathOverlayPreQueryOpen(
     );
 
 static NTSTATUS
+PathOverlayResolveQueryShadowPath(
+    _In_ PFLT_CALLBACK_DATA Data,
+    _Out_ PUNICODE_STRING ShadowPath,
+    _Out_ PBOOLEAN Tombstone
+    );
+
+static NTSTATUS
+PathOverlayQueryNetworkOpenInformation(
+    _In_ PFLT_INSTANCE Instance,
+    _In_ PCUNICODE_STRING NtPath,
+    _Out_ PFILE_NETWORK_OPEN_INFORMATION NetworkInformation
+    );
+
+static NTSTATUS
 PathOverlayBuildShadowPath(
     _In_ PCUNICODE_STRING Store,
     _In_ PCUNICODE_STRING Source,
@@ -779,27 +793,56 @@ PathOverlayShouldDeferQueryOpen(
     )
 {
     NTSTATUS status;
+    UNICODE_STRING shadowPath = { 0 };
+    BOOLEAN tombstone = FALSE;
+    BOOLEAN shouldDefer = FALSE;
+
+    status = PathOverlayResolveQueryShadowPath(Data, &shadowPath, &tombstone);
+    if (tombstone) {
+        shouldDefer = TRUE;
+    } else if (NT_SUCCESS(status) && shadowPath.Buffer != NULL) {
+        shouldDefer = TRUE;
+    }
+
+    if (shadowPath.Buffer != NULL) {
+        ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
+    }
+
+    return shouldDefer;
+}
+
+static NTSTATUS
+PathOverlayResolveQueryShadowPath(
+    _In_ PFLT_CALLBACK_DATA Data,
+    _Out_ PUNICODE_STRING ShadowPath,
+    _Out_ PBOOLEAN Tombstone
+    )
+{
+    NTSTATUS status;
     PFLT_FILE_NAME_INFORMATION nameInfo = NULL;
     PATHOVERLAY_RULE_ENTRY rule;
     WCHAR matchedSourceNtPath[PATHOVERLAY_MAX_PATH_CHARS] = { 0 };
     UNICODE_STRING source;
     UNICODE_STRING store;
-    UNICODE_STRING shadowPath = { 0 };
     PATHOVERLAY_SERVICE_RESPONSE serviceResponse = { 0 };
-    BOOLEAN shouldDefer = FALSE;
+
+    ShadowPath->Buffer = NULL;
+    ShadowPath->Length = 0;
+    ShadowPath->MaximumLength = 0;
+    *Tombstone = FALSE;
 
     if (PathOverlayIsServiceProcess(FltGetRequestorProcessId(Data))) {
-        return FALSE;
+        return STATUS_NOT_FOUND;
     }
 
     status = PathOverlayGetFileNameInformationWithFallback(Data, &nameInfo);
     if (!NT_SUCCESS(status)) {
-        return FALSE;
+        return status;
     }
 
     if (!PathOverlayFindSourceRuleForPath(&nameInfo->Name, &rule, matchedSourceNtPath)) {
         FltReleaseFileNameInformation(nameInfo);
-        return FALSE;
+        return STATUS_NOT_FOUND;
     }
 
     RtlInitUnicodeString(
@@ -815,35 +858,114 @@ PathOverlayShouldDeferQueryOpen(
         &serviceResponse);
 
     if (NT_SUCCESS(status) && serviceResponse.PathState == PathOverlayPathStateTombstone) {
-        shouldDefer = TRUE;
+        *Tombstone = TRUE;
         goto Exit;
     }
     if (NT_SUCCESS(status) && serviceResponse.PathState == PathOverlayPathStatePassthrough) {
+        status = STATUS_NOT_FOUND;
         goto Exit;
     }
     if (NT_SUCCESS(status) && serviceResponse.ShadowNtPath[0] != UNICODE_NULL) {
         UNICODE_STRING responseShadowPath;
 
         RtlInitUnicodeString(&responseShadowPath, serviceResponse.ShadowNtPath);
-        status = PathOverlayAllocateUnicodeStringCopy(&responseShadowPath, &shadowPath, 'OPhP');
-        if (NT_SUCCESS(status) && PathOverlayNtPathExists(&shadowPath)) {
-            shouldDefer = TRUE;
+        status = PathOverlayAllocateUnicodeStringCopy(&responseShadowPath, ShadowPath, 'OPhP');
+        if (!NT_SUCCESS(status)) {
+            goto Exit;
+        }
+        if (!PathOverlayNtPathExists(ShadowPath)) {
+            ExFreePoolWithTag(ShadowPath->Buffer, 'OPhP');
+            ShadowPath->Buffer = NULL;
+            ShadowPath->Length = 0;
+            ShadowPath->MaximumLength = 0;
+            status = STATUS_NOT_FOUND;
         }
         goto Exit;
     }
 
-    status = PathOverlayBuildShadowPath(&store, &source, &nameInfo->Name, &shadowPath);
-    if (NT_SUCCESS(status) && PathOverlayNtPathExists(&shadowPath)) {
-        shouldDefer = TRUE;
+    status = PathOverlayBuildShadowPath(&store, &source, &nameInfo->Name, ShadowPath);
+    if (!NT_SUCCESS(status)) {
+        goto Exit;
+    }
+    if (!PathOverlayNtPathExists(ShadowPath)) {
+        ExFreePoolWithTag(ShadowPath->Buffer, 'OPhP');
+        ShadowPath->Buffer = NULL;
+        ShadowPath->Length = 0;
+        ShadowPath->MaximumLength = 0;
+        status = STATUS_NOT_FOUND;
     }
 
 Exit:
-    if (shadowPath.Buffer != NULL) {
-        ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
-    }
     FltReleaseFileNameInformation(nameInfo);
 
-    return shouldDefer;
+    if (*Tombstone) {
+        return STATUS_OBJECT_NAME_NOT_FOUND;
+    }
+    return status;
+}
+
+static NTSTATUS
+PathOverlayQueryNetworkOpenInformation(
+    _In_ PFLT_INSTANCE Instance,
+    _In_ PCUNICODE_STRING NtPath,
+    _Out_ PFILE_NETWORK_OPEN_INFORMATION NetworkInformation
+    )
+{
+    OBJECT_ATTRIBUTES attributes;
+    IO_STATUS_BLOCK ioStatus = { 0 };
+    HANDLE fileHandle = NULL;
+    PFILE_OBJECT fileObject = NULL;
+    ULONG lengthReturned = 0;
+    NTSTATUS status;
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    RtlZeroMemory(NetworkInformation, sizeof(*NetworkInformation));
+    InitializeObjectAttributes(
+        &attributes,
+        (PUNICODE_STRING)NtPath,
+        OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE,
+        NULL,
+        NULL);
+
+    status = FltCreateFileEx(
+        gFilterHandle,
+        Instance,
+        &fileHandle,
+        &fileObject,
+        FILE_READ_ATTRIBUTES,
+        &attributes,
+        &ioStatus,
+        NULL,
+        FILE_ATTRIBUTE_NORMAL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT | FILE_OPEN_FOR_BACKUP_INTENT,
+        NULL,
+        0,
+        0);
+    if (!NT_SUCCESS(status)) {
+        goto Exit;
+    }
+
+    status = FltQueryInformationFile(
+        Instance,
+        fileObject,
+        NetworkInformation,
+        sizeof(*NetworkInformation),
+        FileNetworkOpenInformation,
+        &lengthReturned);
+
+Exit:
+    if (fileObject != NULL) {
+        ObDereferenceObject(fileObject);
+    }
+    if (fileHandle != NULL) {
+        FltClose(fileHandle);
+    }
+    return status;
 }
 
 static NTSTATUS
@@ -1426,10 +1548,31 @@ PathOverlayPreNetworkQueryOpen(
     _Flt_CompletionContext_Outptr_ PVOID* CompletionContext
     )
 {
-    UNREFERENCED_PARAMETER(FltObjects);
+    NTSTATUS status;
+    UNICODE_STRING shadowPath = { 0 };
+    BOOLEAN tombstone = FALSE;
+
     *CompletionContext = NULL;
 
-    if (PathOverlayShouldDeferQueryOpen(Data)) {
+    status = PathOverlayResolveQueryShadowPath(Data, &shadowPath, &tombstone);
+    if (tombstone) {
+        Data->IoStatus.Status = STATUS_OBJECT_NAME_NOT_FOUND;
+        Data->IoStatus.Information = 0;
+        FltSetCallbackDataDirty(Data);
+        return FLT_PREOP_COMPLETE;
+    }
+    if (NT_SUCCESS(status) && shadowPath.Buffer != NULL) {
+        status = PathOverlayQueryNetworkOpenInformation(
+            FltObjects->Instance,
+            &shadowPath,
+            Data->Iopb->Parameters.NetworkQueryOpen.NetworkInformation);
+        ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
+        if (NT_SUCCESS(status)) {
+            Data->IoStatus.Status = STATUS_SUCCESS;
+            Data->IoStatus.Information = sizeof(FILE_NETWORK_OPEN_INFORMATION);
+            FltSetCallbackDataDirty(Data);
+            return FLT_PREOP_COMPLETE;
+        }
         return FLT_PREOP_DISALLOW_FASTIO;
     }
 

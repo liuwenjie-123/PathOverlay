@@ -281,6 +281,8 @@
 
 2026-04-29 复查测试机日志 `PathOverlay-Test-20260429-160943.log`：失败点为文件 rename 场景 `renamed target path is visible`。服务已成功记录 `before.txt -> after.txt`，且 QueryPath 对 target 返回 `renamed-shadow`，但更早日志显示驱动对 rule source 根目录执行了 copy-on-write，生成了 source 根目录级 shadow，干扰后续目录视图和 renamed target 可见性。已修复驱动 `PreCreate`：当命中路径就是 rule source 根本身时，即使 create 参数带写意图，也不执行 COW；source 根仍按目录视图逻辑处理。
 
+2026-04-29 复查测试机日志 `PathOverlay-Test-20260429-161612.log`：失败点仍为文件 rename 场景 `renamed target path is visible`，但已不是 source 根 COW 问题。服务日志显示 `record-rename ... ok`，且随后 `QueryPath(after.txt)` 返回 `renamed-shadow=...after.txt`，说明服务 metadata 和 shadow materialization 已正确。剩余问题在驱动存在性查询路径：`Test-Path` 可通过 `IRP_MJ_NETWORK_QUERY_OPEN` 做快速属性查询，原逻辑只是 disallow fast I/O 并期待后续 create 重试，导致 renamed target 的 shadow 文件没有被稳定呈现。已修复驱动 `PreNetworkQueryOpen`：对 tombstone 直接返回 not found；对已存在的 shadow/renamed-shadow 直接查询 shadow 文件的 `FILE_NETWORK_OPEN_INFORMATION` 并完成请求。
+
 <a id="T048"></a>
 
 ## T048 - 更新 reparse 兼容性测试与发布文档
