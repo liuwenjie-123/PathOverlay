@@ -26,7 +26,10 @@ copies `sqlite3.dll` beside the test executable when needed, and runs
   log records;
 - service-side overlay operations for copy-on-write, created files, tombstones,
   directory view preparation, commit, discard, conflict detection, occupied-file
-  failure, backup creation, and metadata retention after failed commit.
+  failure, backup creation, and metadata retention after failed commit;
+- compatibility cases for long and Unicode paths, case variants, 8.3 short paths
+  when available, read-only attributes, last-write timestamps, and empty nested
+  directories.
 
 The user-mode tests use directories under `%TEMP%\PathOverlayTests` and clean
 that data before and after the run.
@@ -95,6 +98,9 @@ port, installs and starts `PathOverlaySvc`, verifies CLI IPC, and exercises:
   metadata cleanup;
 - file and directory rename/move isolation;
 - commit/discard by rule id;
+- path and attribute compatibility for long and Unicode paths, case variants,
+  8.3 short paths when available, read-only attributes, last-write timestamps,
+  and empty nested directories;
 - occupied-file detection before commit/discard.
 
 The run is accepted only when the transcript ends with:

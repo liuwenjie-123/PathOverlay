@@ -29,8 +29,8 @@ function Find-SignTool {
 
 function Get-OrCreateCertificate {
     $subjectName = $CertificateSubject -replace '^CN=', ''
-    $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert |
-        Where-Object { $_.Subject -eq $CertificateSubject } |
+    $cert = Get-ChildItem Cert:\CurrentUser\My |
+        Where-Object { $_.EnhancedKeyUsageList -match "Code Signing" -and $_.Subject -eq $CertificateSubject } |
         Sort-Object NotAfter -Descending |
         Select-Object -First 1
 
@@ -123,7 +123,7 @@ Copy-VCRuntime
 $subjectName = Get-OrCreateCertificate
 $signTool = Find-SignTool
 $driverToSign = Join-Path $packageRoot "PathOverlayFlt.sys"
-& $signTool sign /v /fd SHA256 /s My /n $subjectName $driverToSign
+& $signTool sign /v /fd SHA256 /a /s My /n $subjectName $driverToSign
 if ($LASTEXITCODE -ne 0) {
     throw "signtool failed to sign $driverToSign."
 }

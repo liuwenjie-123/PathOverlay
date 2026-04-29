@@ -19,6 +19,39 @@ OperationResult Fail(const std::wstring& message) {
     return OperationResult{false, message};
 }
 
+OperationResult FailFilesystem(
+    const std::wstring& message,
+    const std::wstring& path,
+    const std::error_code& errorCode) {
+    std::wstringstream stream;
+    stream << message << L": path=" << path << L" error=" << errorCode.value();
+    return Fail(stream.str());
+}
+
+fs::path FilesystemPath(const std::wstring& path) {
+    if (path.rfind(L"\\\\?\\", 0) == 0) {
+        return fs::path(path);
+    }
+    if (path.rfind(L"\\\\", 0) == 0) {
+        return fs::path(L"\\\\?\\UNC\\" + path.substr(2));
+    }
+    if (path.size() >= 3 && path[1] == L':' && (path[2] == L'\\' || path[2] == L'/')) {
+        return fs::path(L"\\\\?\\" + path);
+    }
+    return fs::path(path);
+}
+
+std::wstring DisplayPath(const fs::path& path) {
+    std::wstring value = path.wstring();
+    if (value.rfind(L"\\\\?\\UNC\\", 0) == 0) {
+        return L"\\\\" + value.substr(8);
+    }
+    if (value.rfind(L"\\\\?\\", 0) == 0) {
+        return value.substr(4);
+    }
+    return value;
+}
+
 std::wstring FileTimeToText(const FILETIME& time) {
     ULARGE_INTEGER value;
     value.LowPart = time.dwLowDateTime;
@@ -175,12 +208,12 @@ OperationResult PersistChange(
 
 OperationResult CopyFileWithParents(const std::wstring& source, const std::wstring& target) {
     std::error_code errorCode;
-    fs::create_directories(fs::path(target).parent_path(), errorCode);
+    fs::create_directories(FilesystemPath(fs::path(target).parent_path().wstring()), errorCode);
     if (errorCode) {
-        return Fail(L"failed to create target directory");
+        return FailFilesystem(L"failed to create target directory", fs::path(target).parent_path().wstring(), errorCode);
     }
 
-    fs::copy_file(source, target, fs::copy_options::overwrite_existing, errorCode);
+    fs::copy_file(FilesystemPath(source), FilesystemPath(target), fs::copy_options::overwrite_existing, errorCode);
     if (errorCode) {
         return Fail(L"failed to copy file");
     }
@@ -189,15 +222,15 @@ OperationResult CopyFileWithParents(const std::wstring& source, const std::wstri
 
 OperationResult CopyPathWithParents(const std::wstring& source, const std::wstring& target) {
     std::error_code errorCode;
-    if (fs::is_directory(source, errorCode)) {
-        fs::create_directories(fs::path(target).parent_path(), errorCode);
+    if (fs::is_directory(FilesystemPath(source), errorCode)) {
+        fs::create_directories(FilesystemPath(fs::path(target).parent_path().wstring()), errorCode);
         if (errorCode) {
-            return Fail(L"failed to create target directory");
+            return FailFilesystem(L"failed to create target directory", fs::path(target).parent_path().wstring(), errorCode);
         }
 
         fs::copy(
-            source,
-            target,
+            FilesystemPath(source),
+            FilesystemPath(target),
             fs::copy_options::recursive | fs::copy_options::overwrite_existing,
             errorCode);
         if (errorCode) {
@@ -214,26 +247,26 @@ OperationResult CopyPathWithParents(const std::wstring& source, const std::wstri
 
 OperationResult CopyMissingDirectoryTree(const std::wstring& source, const std::wstring& target) {
     std::error_code errorCode;
-    fs::create_directories(target, errorCode);
+    fs::create_directories(FilesystemPath(target), errorCode);
     if (errorCode) {
-        return Fail(L"failed to create target directory");
+        return FailFilesystem(L"failed to create target directory", target, errorCode);
     }
 
-    for (const fs::directory_entry& entry : fs::recursive_directory_iterator(source, errorCode)) {
+    for (const fs::directory_entry& entry : fs::recursive_directory_iterator(FilesystemPath(source), errorCode)) {
         if (errorCode) {
             return Fail(L"failed to enumerate source directory tree");
         }
 
-        const fs::path relative = fs::relative(entry.path(), source, errorCode);
+        const fs::path relative = fs::relative(entry.path(), FilesystemPath(source), errorCode);
         if (errorCode) {
             return Fail(L"failed to compute relative directory path");
         }
         const fs::path targetPath = fs::path(target) / relative;
 
         if (entry.is_directory(errorCode)) {
-            fs::create_directories(targetPath, errorCode);
+            fs::create_directories(FilesystemPath(targetPath.wstring()), errorCode);
             if (errorCode) {
-                return Fail(L"failed to create target child directory");
+                return FailFilesystem(L"failed to create target child directory", targetPath.wstring(), errorCode);
             }
             continue;
         }
@@ -242,12 +275,12 @@ OperationResult CopyMissingDirectoryTree(const std::wstring& source, const std::
         }
 
         if (entry.is_regular_file(errorCode)) {
-            if (!fs::exists(targetPath, errorCode)) {
-                fs::create_directories(targetPath.parent_path(), errorCode);
+            if (!fs::exists(FilesystemPath(targetPath.wstring()), errorCode)) {
+                fs::create_directories(FilesystemPath(targetPath.parent_path().wstring()), errorCode);
                 if (errorCode) {
-                    return Fail(L"failed to create target child parent directory");
+                    return FailFilesystem(L"failed to create target child parent directory", targetPath.parent_path().wstring(), errorCode);
                 }
-                fs::copy_file(entry.path(), targetPath, fs::copy_options::none, errorCode);
+                fs::copy_file(entry.path(), FilesystemPath(targetPath.wstring()), fs::copy_options::none, errorCode);
                 if (errorCode) {
                     return Fail(L"failed to copy target child file");
                 }
@@ -261,21 +294,21 @@ OperationResult CopyMissingDirectoryTree(const std::wstring& source, const std::
 
 OperationResult CopyMissingPath(const std::wstring& source, const std::wstring& target) {
     std::error_code errorCode;
-    if (!fs::exists(source, errorCode)) {
+    if (!fs::exists(FilesystemPath(source), errorCode)) {
         return Ok();
     }
     if (errorCode) {
         return Fail(L"failed to read source path state");
     }
 
-    if (fs::is_directory(source, errorCode)) {
+    if (fs::is_directory(FilesystemPath(source), errorCode)) {
         return CopyMissingDirectoryTree(source, target);
     }
     if (errorCode) {
         return Fail(L"failed to read source path type");
     }
 
-    if (fs::exists(target, errorCode)) {
+    if (fs::exists(FilesystemPath(target), errorCode)) {
         errorCode.clear();
         return Ok();
     }
@@ -352,7 +385,7 @@ std::wstring RelativePathUnder(const std::wstring& parent, const std::wstring& c
 
 bool IsDirectoryPath(const std::wstring& path, bool* isDirectory, std::wstring* error) {
     std::error_code errorCode;
-    const bool exists = fs::exists(path, errorCode);
+    const bool exists = fs::exists(FilesystemPath(path), errorCode);
     if (errorCode) {
         *error = L"failed to read path state";
         return false;
@@ -362,7 +395,7 @@ bool IsDirectoryPath(const std::wstring& path, bool* isDirectory, std::wstring* 
         return true;
     }
 
-    *isDirectory = fs::is_directory(path, errorCode);
+    *isDirectory = fs::is_directory(FilesystemPath(path), errorCode);
     if (errorCode) {
         *error = L"failed to read path type";
         return false;
@@ -483,16 +516,17 @@ OperationResult OverlayOperations::PrepareCopyOnWrite(const OverlayRule& rule, c
     const std::wstring normalizedReal = NormalizePath(realPath);
     const std::wstring normalizedShadow = NormalizePath(*shadowPath);
     std::error_code errorCode;
-    fs::create_directories(fs::path(normalizedShadow).parent_path(), errorCode);
+    const std::wstring shadowParent = fs::path(normalizedShadow).parent_path().wstring();
+    fs::create_directories(FilesystemPath(shadowParent), errorCode);
     if (errorCode) {
-        return Fail(L"failed to create shadow parent directory");
+        return FailFilesystem(L"failed to create shadow parent directory", shadowParent, errorCode);
     }
 
-    const bool realExists = fs::exists(normalizedReal, errorCode);
+    const bool realExists = fs::exists(FilesystemPath(normalizedReal), errorCode);
     if (errorCode) {
         return Fail(L"failed to read real path state");
     }
-    if (realExists && fs::is_directory(normalizedReal, errorCode)) {
+    if (realExists && fs::is_directory(FilesystemPath(normalizedReal), errorCode)) {
         return PrepareDirectoryView(rule, normalizedReal, shadowPath);
     }
     if (errorCode) {
@@ -500,7 +534,7 @@ OperationResult OverlayOperations::PrepareCopyOnWrite(const OverlayRule& rule, c
     }
 
     errorCode.clear();
-    const bool shadowExists = fs::exists(normalizedShadow, errorCode);
+    const bool shadowExists = fs::exists(FilesystemPath(normalizedShadow), errorCode);
     if (realExists && !shadowExists) {
         const OperationResult copyResult = CopyFileWithParents(normalizedReal, normalizedShadow);
         if (!copyResult.success) {
@@ -526,15 +560,15 @@ OperationResult OverlayOperations::PrepareDirectoryView(const OverlayRule& rule,
     const std::wstring normalizedReal = NormalizePath(realPath);
     const std::wstring normalizedShadow = NormalizePath(*shadowPath);
     std::error_code errorCode;
-    fs::create_directories(normalizedShadow, errorCode);
+    fs::create_directories(FilesystemPath(normalizedShadow), errorCode);
     if (errorCode) {
-        return Fail(L"failed to create shadow directory view");
+        return FailFilesystem(L"failed to create shadow directory view", normalizedShadow, errorCode);
     }
 
-    if (!fs::exists(normalizedReal, errorCode)) {
+    if (!fs::exists(FilesystemPath(normalizedReal), errorCode)) {
         return PersistChange(metadata_, rule, normalizedReal, normalizedShadow, ChangeState::kCreated);
     }
-    if (!fs::is_directory(normalizedReal, errorCode)) {
+    if (!fs::is_directory(FilesystemPath(normalizedReal), errorCode)) {
         return Fail(L"directory view target is not a directory");
     }
 
@@ -557,18 +591,18 @@ OperationResult OverlayOperations::PrepareDirectoryView(const OverlayRule& rule,
             continue;
         }
 
-        fs::remove_all(*mappedTombstone, errorCode);
+        fs::remove_all(FilesystemPath(*mappedTombstone), errorCode);
         if (errorCode) {
             return Fail(L"failed to remove existing shadow item for tombstone");
         }
     }
 
-    for (const fs::directory_entry& entry : fs::directory_iterator(normalizedReal, errorCode)) {
+    for (const fs::directory_entry& entry : fs::directory_iterator(FilesystemPath(normalizedReal), errorCode)) {
         if (errorCode) {
             return Fail(L"failed to enumerate real directory");
         }
 
-        const std::wstring realChild = entry.path().wstring();
+        const std::wstring realChild = DisplayPath(entry.path());
         if (IsDirectTombstoneChild(records, normalizedReal, realChild)) {
             continue;
         }
@@ -578,15 +612,15 @@ OperationResult OverlayOperations::PrepareDirectoryView(const OverlayRule& rule,
             continue;
         }
 
-        if (fs::exists(*mappedChild, errorCode)) {
+        if (fs::exists(FilesystemPath(*mappedChild), errorCode)) {
             errorCode.clear();
             continue;
         }
 
         if (entry.is_directory(errorCode)) {
-            fs::create_directories(*mappedChild, errorCode);
+            fs::create_directories(FilesystemPath(*mappedChild), errorCode);
             if (errorCode) {
-                return Fail(L"failed to create shadow child directory");
+                return FailFilesystem(L"failed to create shadow child directory", *mappedChild, errorCode);
             }
             continue;
         }
@@ -635,7 +669,7 @@ OperationResult OverlayOperations::PrepareRenamedTargetPath(
         }
 
         std::error_code errorCode;
-        if (fs::exists(targetShadow, errorCode)) {
+        if (fs::exists(FilesystemPath(targetShadow), errorCode)) {
             return Ok();
         }
         if (errorCode) {
@@ -662,9 +696,10 @@ OperationResult OverlayOperations::RecordCreatedFile(const OverlayRule& rule, co
     }
 
     std::error_code errorCode;
-    fs::create_directories(fs::path(*mapped).parent_path(), errorCode);
+    const std::wstring shadowParent = fs::path(*mapped).parent_path().wstring();
+    fs::create_directories(FilesystemPath(shadowParent), errorCode);
     if (errorCode) {
-        return Fail(L"failed to create shadow parent directory");
+        return FailFilesystem(L"failed to create shadow parent directory", shadowParent, errorCode);
     }
 
     return PersistChange(metadata_, rule, realPath, *mapped, ChangeState::kCreated);
@@ -678,8 +713,8 @@ OperationResult OverlayOperations::RecordDelete(const OverlayRule& rule, const s
 
     std::error_code errorCode;
     const std::wstring normalizedReal = NormalizePath(realPath);
-    if (fs::exists(*mapped, errorCode)) {
-        fs::remove_all(*mapped, errorCode);
+    if (fs::exists(FilesystemPath(*mapped), errorCode)) {
+        fs::remove_all(FilesystemPath(*mapped), errorCode);
         if (errorCode) {
             return Fail(L"failed to remove existing shadow item for tombstone");
         }

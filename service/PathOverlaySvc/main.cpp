@@ -65,8 +65,12 @@ std::string WideToUtf8(const std::wstring& value) {
         return {};
     }
     const int required = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    std::string output(static_cast<size_t>(required - 1), '\0');
+    if (required <= 1) {
+        return {};
+    }
+    std::string output(static_cast<size_t>(required), '\0');
     WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, output.data(), required, nullptr, nullptr);
+    output.resize(static_cast<size_t>(required - 1));
     return output;
 }
 
@@ -398,6 +402,9 @@ PATHOVERLAY_SERVICE_RESPONSE ProcessDriverRequest(const PATHOVERLAY_SERVICE_REQU
         result = operations.PrepareCopyOnWrite(rule, realPath, &shadowPath);
         WriteLog(
             std::wstring(L"driver request: copy-on-write rule=") + rule.id + L" path=" + realPath +
+            L" path_len=" + std::to_wstring(realPath.size()) +
+            L" shadow=" + shadowPath +
+            L" shadow_len=" + std::to_wstring(shadowPath.size()) +
             (result.success ? L" ok" : L" failed: " + result.message));
     } else if (request.Command == PathOverlayServiceCommandPrepareDirectoryView) {
         std::wstring shadowPath;
@@ -1744,6 +1751,14 @@ std::wstring ProcessRequest(const std::wstring& request) {
         if (!metadata.ListChanges(rule.id, &records, &error)) {
             return L"ERROR " + error;
         }
+        WriteLog(
+            L"changes: rule=" + rule.id + L" count=" + std::to_wstring(records.size()));
+        for (size_t i = 0; i < records.size(); ++i) {
+            WriteLog(
+                L"changes: record[" + std::to_wstring(i) + L"] state=" +
+                pathoverlay::ChangeStateToString(records[i].state) + L" realPath=" +
+                records[i].realPath + L" realPath_len=" + std::to_wstring(records[i].realPath.size()));
+        }
         return FormatChangesForRule(rule, records);
     }
 
@@ -1946,7 +1961,12 @@ DWORD WINAPI PipeServerThread(LPVOID parameter) {
                 const std::wstring response = ProcessRequest(Utf8ToWide(std::string(buffer, buffer + bytesRead)));
                 const std::string responseUtf8 = WideToUtf8(response);
                 DWORD bytesWritten = 0;
-                WriteFile(pipe, responseUtf8.data(), static_cast<DWORD>(responseUtf8.size()), &bytesWritten, nullptr);
+                if (!WriteFile(pipe, responseUtf8.data(), static_cast<DWORD>(responseUtf8.size()), &bytesWritten, nullptr)) {
+                    WriteLog(L"pipe: WriteFile failed error=" + std::to_wstring(GetLastError()));
+                } else if (bytesWritten != responseUtf8.size()) {
+                    WriteLog(L"pipe: WriteFile partial write bytesWritten=" + std::to_wstring(bytesWritten)
+                             + L" expected=" + std::to_wstring(responseUtf8.size()));
+                }
             }
         }
 

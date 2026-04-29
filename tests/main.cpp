@@ -61,6 +61,83 @@ std::string ReadTextFile(const std::wstring& path) {
     return std::string(buffer, buffer + read);
 }
 
+bool SetReadOnly(const std::wstring& path, bool readOnly) {
+    DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        return false;
+    }
+    if (readOnly) {
+        attributes |= FILE_ATTRIBUTE_READONLY;
+    } else {
+        attributes &= ~FILE_ATTRIBUTE_READONLY;
+        if (attributes == 0) {
+            attributes = FILE_ATTRIBUTE_NORMAL;
+        }
+    }
+    return SetFileAttributesW(path.c_str(), attributes) != FALSE;
+}
+
+bool HasAttribute(const std::wstring& path, DWORD attribute) {
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & attribute) != 0;
+}
+
+bool SetLastWriteTimeUtc(const std::wstring& path, const FILETIME& lastWriteTime) {
+    HANDLE file = CreateFileW(
+        path.c_str(),
+        FILE_WRITE_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,
+        nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    const BOOL ok = SetFileTime(file, nullptr, nullptr, &lastWriteTime);
+    CloseHandle(file);
+    return ok != FALSE;
+}
+
+bool GetLastWriteTimeUtc(const std::wstring& path, FILETIME* lastWriteTime) {
+    WIN32_FILE_ATTRIBUTE_DATA data = {};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) {
+        return false;
+    }
+    *lastWriteTime = data.ftLastWriteTime;
+    return true;
+}
+
+bool SameFileTime(const FILETIME& left, const FILETIME& right) {
+    return left.dwLowDateTime == right.dwLowDateTime && left.dwHighDateTime == right.dwHighDateTime;
+}
+
+FILETIME FileTimeFromSystemTime(WORD year, WORD month, WORD day, WORD hour, WORD minute, WORD second) {
+    SYSTEMTIME systemTime = {};
+    systemTime.wYear = year;
+    systemTime.wMonth = month;
+    systemTime.wDay = day;
+    systemTime.wHour = hour;
+    systemTime.wMinute = minute;
+    systemTime.wSecond = second;
+    FILETIME fileTime = {};
+    SystemTimeToFileTime(&systemTime, &fileTime);
+    return fileTime;
+}
+
+std::wstring ShortPathOrEmpty(const std::wstring& path) {
+    DWORD required = GetShortPathNameW(path.c_str(), nullptr, 0);
+    if (required == 0) {
+        return L"";
+    }
+    std::vector<wchar_t> buffer(required);
+    DWORD length = GetShortPathNameW(path.c_str(), buffer.data(), required);
+    if (length == 0 || length >= required) {
+        return L"";
+    }
+    return std::wstring(buffer.data(), length);
+}
+
 std::wstring BackupPathForTest(const std::wstring& backupRoot, const std::wstring& realPath) {
     std::wstring normalized = pathoverlay::NormalizePath(realPath);
     if (normalized.size() >= 2 && normalized[1] == L':') {
@@ -362,6 +439,97 @@ int wmain() {
         ok &= Expect(opResult.success, L"same rule should commit after recovery");
         ok &= Expect(ReadTextFile(recoveryReal) == "recovery-overlay",
                      L"retry commit after recovery should write real file");
+
+        const std::wstring compatibilitySource = TempPathOverlayDir(L"compat_source");
+        const std::wstring compatibilityStore = TempPathOverlayDir(L"compat_store");
+        EnsureDirectory(compatibilitySource);
+        EnsureDirectory(compatibilityStore);
+        pathoverlay::OverlayRule compatibilityRule{
+            L"rule-compat",
+            L"compatibility",
+            true,
+            compatibilitySource,
+            compatibilityStore,
+        };
+        ok &= Expect(metadata.UpsertRule(compatibilityRule, &sqliteError), L"compatibility rule should be persisted");
+
+        const std::wstring unicodeDirectory = compatibilitySource + L"\\unicode-路径";
+        const std::wstring longDirectory =
+            unicodeDirectory +
+            L"\\deep-segment-001\\deep-segment-002";
+        EnsureDirectory(unicodeDirectory);
+        std::filesystem::create_directories(longDirectory, cleanupError);
+        ok &= Expect(!cleanupError, L"long unicode directory should be created");
+        cleanupError.clear();
+        const std::wstring longUnicodeReal = longDirectory + L"\\数据-file.txt";
+        ok &= Expect(WriteTextFile(longUnicodeReal, "long-unicode-base"),
+                     L"long unicode real file should be created");
+        std::wstring longUnicodeShadow;
+        opResult = operations.PrepareCopyOnWrite(compatibilityRule, longUnicodeReal, &longUnicodeShadow);
+        ok &= Expect(opResult.success, L"long unicode path should prepare shadow copy");
+        ok &= Expect(WriteTextFile(longUnicodeShadow, "long-unicode-overlay"),
+                     L"long unicode shadow should be writable");
+        opResult = operations.Commit(compatibilityRule, L"commit-compat-long-unicode");
+        ok &= Expect(opResult.success, L"long unicode path commit should succeed");
+        ok &= Expect(ReadTextFile(longUnicodeReal) == "long-unicode-overlay",
+                     L"long unicode path commit should update real file");
+
+        const std::wstring caseReal = compatibilitySource + L"\\CaseName.txt";
+        ok &= Expect(WriteTextFile(caseReal, "case-base"), L"case real file should be created");
+        const std::wstring caseVariant = compatibilitySource + L"\\casename.txt";
+        ok &= Expect(pathoverlay::ValidateRealPathInRule(compatibilityRule, caseVariant).ok(),
+                     L"case-variant real path should stay inside rule");
+        std::wstring caseShadow;
+        opResult = operations.PrepareCopyOnWrite(compatibilityRule, caseVariant, &caseShadow);
+        ok &= Expect(opResult.success, L"case-variant path should prepare shadow copy");
+        ok &= Expect(ReadTextFile(caseShadow) == "case-base", L"case-variant shadow should copy real content");
+        ok &= Expect(operations.Discard(compatibilityRule).success,
+                     L"compatibility discard should clear case-variant metadata");
+
+        const std::wstring shortReal = compatibilitySource + L"\\ShortNameProbe.txt";
+        ok &= Expect(WriteTextFile(shortReal, "short-base"), L"short path real file should be created");
+        const std::wstring shortPath = ShortPathOrEmpty(shortReal);
+        if (!shortPath.empty() && _wcsicmp(shortPath.c_str(), shortReal.c_str()) != 0) {
+            std::wstring shortShadow;
+            opResult = operations.PrepareCopyOnWrite(compatibilityRule, shortPath, &shortShadow);
+            ok &= Expect(opResult.success, L"8.3 short path should prepare shadow copy");
+            ok &= Expect(ReadTextFile(shortShadow) == "short-base", L"8.3 short path shadow should copy content");
+            ok &= Expect(operations.Discard(compatibilityRule).success,
+                         L"compatibility discard should clear short-path metadata");
+        }
+
+        const std::wstring readonlyReal = compatibilitySource + L"\\readonly-time.txt";
+        ok &= Expect(WriteTextFile(readonlyReal, "readonly-base"), L"readonly test file should be created");
+        const FILETIME expectedWriteTime = FileTimeFromSystemTime(2024, 1, 2, 3, 4, 5);
+        ok &= Expect(SetLastWriteTimeUtc(readonlyReal, expectedWriteTime),
+                     L"readonly test file timestamp should be set");
+        ok &= Expect(SetReadOnly(readonlyReal, true), L"readonly test file attribute should be set");
+        std::wstring readonlyShadow;
+        opResult = operations.PrepareCopyOnWrite(compatibilityRule, readonlyReal, &readonlyShadow);
+        ok &= Expect(opResult.success, L"readonly file should prepare shadow copy");
+        FILETIME actualWriteTime = {};
+        ok &= Expect(HasAttribute(readonlyShadow, FILE_ATTRIBUTE_READONLY),
+                     L"shadow copy should preserve readonly attribute");
+        ok &= Expect(GetLastWriteTimeUtc(readonlyShadow, &actualWriteTime) &&
+                         SameFileTime(expectedWriteTime, actualWriteTime),
+                     L"shadow copy should preserve last-write timestamp");
+        SetReadOnly(readonlyReal, false);
+        SetReadOnly(readonlyShadow, false);
+        ok &= Expect(operations.Discard(compatibilityRule).success,
+                     L"compatibility discard should clear readonly metadata");
+
+        const std::wstring emptyRoot = compatibilitySource + L"\\empty-root";
+        const auto emptyShadow = pathoverlay::MapRealPathToShadowPath(compatibilityRule, emptyRoot);
+        ok &= Expect(emptyShadow.has_value(), L"empty directory should map to shadow");
+        std::filesystem::create_directories(*emptyShadow + L"\\nested\\leaf", cleanupError);
+        ok &= Expect(!cleanupError, L"empty nested shadow directory should be created");
+        cleanupError.clear();
+        opResult = operations.RecordCreatedFile(compatibilityRule, emptyRoot);
+        ok &= Expect(opResult.success, L"empty nested directory should be recorded as created");
+        opResult = operations.Commit(compatibilityRule, L"commit-compat-empty-directory");
+        ok &= Expect(opResult.success, L"empty nested directory commit should succeed");
+        ok &= Expect(IsDirectory(emptyRoot + L"\\nested\\leaf"),
+                     L"empty nested directory should be created in real source");
 
         const std::wstring existingReal = opsSource + L"\\existing.txt";
         ok &= Expect(WriteTextFile(existingReal, "original"), L"existing real file should be created");
