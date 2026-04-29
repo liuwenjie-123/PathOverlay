@@ -17,6 +17,7 @@ PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driv
 - 支持按 rule id 执行 `commit`，写回变更，写回或删除前创建备份。
 - 支持按 rule id 执行 `discard`，丢弃隔离数据，不修改真实文件。
 - commit/discard 前检测占用文件；默认失败并列出占用进程，显式 `--confirm-close` 时可关闭非关键用户进程后继续。
+- 支持只读 `status` 和 `doctor` 诊断命令，查看服务、驱动、规则、pending changes、operation 和 cleanup 状态。
 - 服务和 store 路径排除重定向，避免递归影响。
 
 ## 已知限制
@@ -28,7 +29,7 @@ PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driv
 - 不支持 per-rule include/exclude pattern、排除路径和按进程规则。
 - 不支持注册表虚拟化，也不提供完整系统盘保护或安全沙箱边界。
 - 不覆盖硬链接、alternate data streams、完整 ACL 继承和复杂安全语义。
-- 当前 vNext 原型尚未完成稳定化恢复层：commit/discard 中断后的 operation 状态、discard 后台 cleanup 重启续删、`status`、`doctor`、`diagnostics collect`、dry-run 和备份恢复能力按 `docs/Stabilization_and_Recovery_Plan.md` 分阶段实现。
+- 当前 vNext 原型尚未完成全部稳定化能力：`diagnostics collect`、dry-run 和备份恢复能力按 `docs/Stabilization_and_Recovery_Plan.md` 分阶段实现。
 - 第一阶段恢复能力只做保守诊断和可重试状态记录，不自动 repair、restore 或宣称完整 rollback。
 - 真实驱动测试需要 Windows 测试机、管理员权限、test-signing 和签名证书。
 
@@ -195,6 +196,8 @@ CLI 示例：
 .\pathoverlay.exe rule add C:\Temp\AnotherSource --store D:\PathOverlayStore\AnotherSource
 .\pathoverlay.exe rule show
 .\pathoverlay.exe changes
+.\pathoverlay.exe status
+.\pathoverlay.exe doctor
 .\pathoverlay.exe commit --rule <id>
 .\pathoverlay.exe discard --rule <id>
 .\pathoverlay.exe rule disable --rule <id>

@@ -875,7 +875,7 @@
     {
       "id": "T039",
       "title": "新增 status 和 doctor 诊断命令",
-      "status": "pending",
+      "status": "done",
       "description": "提供只读诊断视图，帮助判断服务、驱动、规则、pending changes、operation 和 cleanup 状态。",
       "deliverables": [
         "pathoverlay status 命令",
@@ -892,7 +892,8 @@
       ],
       "depends_on": [
         "T038"
-      ]
+      ],
+      "notes_ref": "docs/task-notes.md#T039"
     },
     {
       "id": "T040",

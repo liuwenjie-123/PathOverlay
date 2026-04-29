@@ -222,3 +222,9 @@
 ## T038 - 持久化 discard 后台清理队列
 
 2026-04-29：已新增 `cleanup_queue` 元数据表和 `CleanupRecord`，记录 cleanup id、rule id、detached shadow path、status、attempts、last_error 和时间字段。`OverlayOperations::Discard` 仍先把 active `store\drive` 快速 rename 到 `.discard-cleanup-*`，确保 discard 返回后旧 active shadow 不再参与重定向；随后删除该 rule 的 changes，并把 detached cleanup 目录以 `pending` 状态写入队列，不再使用不可追踪 detached thread。新增 `OverlayOperations::ProcessCleanupQueue`，服务启动时会处理 `pending` 或旧 `running` cleanup：删除成功标记 `done`，失败标记 `failed` 并保留错误；删除前校验 cleanup 路径必须是对应 rule store 的子路径，避免误删真实 source。用户态测试覆盖 discard 后 active drive 立即移走、队列处理删除 detached 目录并标记 done、越界 cleanup 路径标记 failed 且不删除真实 source 文件。验证通过：`task.json` JSON 解析、`git diff --check`、`scripts/build.ps1`、`scripts/test.ps1`。
+
+<a id="T039"></a>
+
+## T039 - 新增 status 和 doctor 诊断命令
+
+2026-04-29：已新增 CLI/服务 IPC 命令 `pathoverlay status` 和 `pathoverlay doctor`。`status` 输出服务连接、驱动连接、规则总数和启用数量、pending changes 总数、每条 rule 的 changes 数、cleanup pending/running/failed/done 计数以及最近 operation 摘要。`doctor` 默认只读扫描 failed/recoverable/running operation、failed cleanup、缺失 cleanup 路径、缺失 rule source、非法 store 类型和 created/modified/renamed change 缺失 shadow，并以 `ERROR`/`WARN` 行输出；不修改 metadata、shadow 或真实 source。README 已补充 `status`/`doctor` 当前能力并从未完成能力中移除。验证通过：`task.json` JSON 解析、`git diff --check`、`scripts/build.ps1`、`scripts/test.ps1`，以及 Debug `install-start.ps1 -SkipDriver -ResetData` 后手工执行 `pathoverlay status` 和 `pathoverlay doctor`，输出分别包含 `service=connected`、`driver=not_connected`、规则/cleanup/operation 摘要和 `no issues`；验证后已卸载服务并清理数据。

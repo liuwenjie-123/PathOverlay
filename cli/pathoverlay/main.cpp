@@ -85,6 +85,8 @@ void PrintUsage() {
         << L"  pathoverlay debug service-write <path> <content>\n"
         << L"  pathoverlay debug prepare-cow --rule <id> <path>\n"
         << L"  pathoverlay changes\n"
+        << L"  pathoverlay status\n"
+        << L"  pathoverlay doctor\n"
         << L"  pathoverlay driver status\n"
         << L"  pathoverlay commit --rule <id> [--confirm-close]\n"
         << L"  pathoverlay discard --rule <id> [--confirm-close]\n";
@@ -134,6 +136,12 @@ int wmain(int argc, wchar_t* argv[]) {
 
     if (command == L"changes") {
         return SendRequest(L"changes");
+    }
+    if (command == L"status") {
+        return SendRequest(L"status");
+    }
+    if (command == L"doctor") {
+        return SendRequest(L"doctor");
     }
     if (command == L"driver") {
         if (argc == 3 && std::wstring(argv[2]) == L"status") {

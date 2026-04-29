@@ -894,6 +894,208 @@ std::wstring AppendDriverSyncWarning(std::wstring response, const std::wstring& 
     return response + L" warning=driver sync failed: " + syncError;
 }
 
+std::wstring FormatCount(size_t value) {
+    return std::to_wstring(static_cast<unsigned long long>(value));
+}
+
+bool ShadowRequiredForDiagnostic(pathoverlay::ChangeState state) {
+    return state == pathoverlay::ChangeState::kCreated ||
+           state == pathoverlay::ChangeState::kModified ||
+           state == pathoverlay::ChangeState::kRenamed;
+}
+
+std::wstring BuildStatusResponse(pathoverlay::MetadataStore& metadata) {
+    std::wstring error;
+    std::vector<pathoverlay::OverlayRule> rules;
+    if (!metadata.ListRules(&rules, &error)) {
+        return L"ERROR " + error;
+    }
+    std::vector<pathoverlay::OperationRecord> operations;
+    if (!metadata.ListOperations(&operations, &error)) {
+        return L"ERROR " + error;
+    }
+    std::vector<pathoverlay::CleanupRecord> cleanupRecords;
+    if (!metadata.ListCleanupRecords(&cleanupRecords, &error)) {
+        return L"ERROR " + error;
+    }
+
+    size_t enabledRules = 0;
+    size_t pendingChanges = 0;
+    std::wstringstream output;
+    output << L"OK"
+           << L"\nservice=connected"
+           << L"\ndriver=" << (IsDriverPortConnected() ? L"connected" : L"not_connected");
+
+    for (const auto& rule : rules) {
+        if (rule.enabled) {
+            ++enabledRules;
+        }
+        std::vector<pathoverlay::ChangeRecord> records;
+        if (!metadata.ListChanges(rule.id, &records, &error)) {
+            return L"ERROR " + error;
+        }
+        pendingChanges += records.size();
+    }
+
+    output << L"\nrules total=" << FormatCount(rules.size())
+           << L" enabled=" << FormatCount(enabledRules)
+           << L" disabled=" << FormatCount(rules.size() - enabledRules)
+           << L"\npending_changes=" << FormatCount(pendingChanges);
+
+    for (const auto& rule : rules) {
+        std::vector<pathoverlay::ChangeRecord> records;
+        if (!metadata.ListChanges(rule.id, &records, &error)) {
+            return L"ERROR " + error;
+        }
+        output << L"\nrule=" << rule.id
+               << L" enabled=" << (rule.enabled ? L"true" : L"false")
+               << L" changes=" << FormatCount(records.size())
+               << L" source=" << rule.source
+               << L" store=" << rule.store;
+    }
+
+    size_t cleanupPending = 0;
+    size_t cleanupRunning = 0;
+    size_t cleanupFailed = 0;
+    size_t cleanupDone = 0;
+    for (const auto& record : cleanupRecords) {
+        if (record.status == L"pending") {
+            ++cleanupPending;
+        } else if (record.status == L"running") {
+            ++cleanupRunning;
+        } else if (record.status == L"failed") {
+            ++cleanupFailed;
+        } else if (record.status == L"done") {
+            ++cleanupDone;
+        }
+    }
+    output << L"\ncleanup pending=" << FormatCount(cleanupPending)
+           << L" running=" << FormatCount(cleanupRunning)
+           << L" failed=" << FormatCount(cleanupFailed)
+           << L" done=" << FormatCount(cleanupDone);
+
+    if (operations.empty()) {
+        output << L"\noperation none";
+    } else {
+        const auto& latest = operations.back();
+        output << L"\noperation latest=" << latest.id
+               << L" action=" << latest.action
+               << L" status=" << latest.status
+               << L" phase=" << latest.phase
+               << L" rule=" << latest.ruleId;
+        if (!latest.error.empty()) {
+            output << L" error=" << latest.error;
+        }
+    }
+
+    return output.str();
+}
+
+std::wstring BuildDoctorResponse(pathoverlay::MetadataStore& metadata) {
+    std::wstring error;
+    std::vector<pathoverlay::OverlayRule> rules;
+    if (!metadata.ListRules(&rules, &error)) {
+        return L"ERROR " + error;
+    }
+    std::vector<pathoverlay::OperationRecord> operations;
+    if (!metadata.ListOperations(&operations, &error)) {
+        return L"ERROR " + error;
+    }
+    std::vector<pathoverlay::CleanupRecord> cleanupRecords;
+    if (!metadata.ListCleanupRecords(&cleanupRecords, &error)) {
+        return L"ERROR " + error;
+    }
+
+    std::wstringstream output;
+    output << L"OK";
+    size_t warnings = 0;
+    size_t errors = 0;
+
+    for (const auto& operation : operations) {
+        if (operation.status == L"failed") {
+            ++errors;
+            output << L"\nERROR failed operation id=" << operation.id
+                   << L" action=" << operation.action
+                   << L" rule=" << operation.ruleId
+                   << L" phase=" << operation.phase;
+            if (!operation.error.empty()) {
+                output << L" error=" << operation.error;
+            }
+        } else if (operation.status == L"recoverable" || operation.status == L"running") {
+            ++warnings;
+            output << L"\nWARN operation requires attention id=" << operation.id
+                   << L" status=" << operation.status
+                   << L" action=" << operation.action
+                   << L" rule=" << operation.ruleId
+                   << L" phase=" << operation.phase;
+        }
+    }
+
+    for (const auto& record : cleanupRecords) {
+        pathoverlay::OverlayRule cleanupRule;
+        const bool hasRule = metadata.GetRule(record.ruleId, &cleanupRule, &error);
+        if (!hasRule) {
+            ++errors;
+            output << L"\nERROR orphan cleanup id=" << record.id
+                   << L" rule=" << record.ruleId
+                   << L" path=" << record.path;
+            continue;
+        }
+        if (record.status == L"failed") {
+            ++errors;
+            output << L"\nERROR failed cleanup id=" << record.id
+                   << L" rule=" << record.ruleId
+                   << L" path=" << record.path
+                   << L" error=" << record.lastError;
+        }
+        if ((record.status == L"pending" || record.status == L"running") &&
+            GetFileAttributesW(record.path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            ++warnings;
+            output << L"\nWARN orphan cleanup path missing id=" << record.id
+                   << L" rule=" << record.ruleId
+                   << L" path=" << record.path;
+        }
+    }
+
+    for (const auto& rule : rules) {
+        const DWORD sourceAttributes = GetFileAttributesW(rule.source.c_str());
+        if (sourceAttributes == INVALID_FILE_ATTRIBUTES) {
+            ++warnings;
+            output << L"\nWARN rule source missing rule=" << rule.id
+                   << L" source=" << rule.source;
+        }
+        const DWORD storeAttributes = GetFileAttributesW(rule.store.c_str());
+        if (storeAttributes != INVALID_FILE_ATTRIBUTES &&
+            (storeAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+            ++errors;
+            output << L"\nERROR rule store is not directory rule=" << rule.id
+                   << L" store=" << rule.store;
+        }
+
+        std::vector<pathoverlay::ChangeRecord> records;
+        if (!metadata.ListChanges(rule.id, &records, &error)) {
+            return L"ERROR " + error;
+        }
+        for (const auto& record : records) {
+            if (ShadowRequiredForDiagnostic(record.state) &&
+                GetFileAttributesW(record.shadowPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                ++errors;
+                output << L"\nERROR missing shadow rule=" << rule.id
+                       << L" path=" << record.realPath
+                       << L" shadow=" << record.shadowPath;
+            }
+        }
+    }
+
+    if (warnings == 0 && errors == 0) {
+        output << L"\nno issues";
+    } else {
+        output << L"\nsummary errors=" << FormatCount(errors)
+               << L" warnings=" << FormatCount(warnings);
+    }
+    return output.str();
+}
+
 bool PushDriverRule(const pathoverlay::OverlayRule& rule, std::wstring* error) {
     if (!rule.enabled) {
         return true;
@@ -1118,6 +1320,14 @@ std::wstring ProcessRequest(const std::wstring& request) {
 
     if (request == L"driver status") {
         return IsDriverPortConnected() ? L"OK driver connected" : L"ERROR driver not connected";
+    }
+
+    if (request == L"status") {
+        return BuildStatusResponse(metadata);
+    }
+
+    if (request == L"doctor") {
+        return BuildDoctorResponse(metadata);
     }
 
     if (request.rfind(L"rule add ", 0) == 0) {
