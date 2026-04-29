@@ -277,6 +277,8 @@
 
 2026-04-29 复查测试机日志 `PathOverlay-Test-20260429-155428.log`：新增 junction 场景失败于 `junction subtree is not copied to shadow`。日志显示 `mklink /J` 创建 junction 时，驱动先对 `source\junction-out` 执行 copy-on-write，生成 shadow 目录；随后写入 `junction-out\outside.txt` 虽然直通到了 target，但 shadow 已存在导致断言失败。已修复驱动 `PreCreate`：带 `FILE_OPEN_REPARSE_POINT` 的打开/创建请求直接直通，不进入 COW 或目录视图逻辑，使 junction/symlink 自身创建不被 overlay 接管。真实驱动 E2E 需重新打包后在测试机复跑。
 
+2026-04-29 复查测试机日志 `PathOverlay-Test-20260429-155856.log`：失败点变为旧目录 tombstone 场景 `tombstoned directory is hidden`，不是前一次 junction shadow 断言。服务日志显示 `delete-dir state=tombstone`，说明服务端 metadata 已记录 tombstone，但驱动此前对所有 `FILE_OPEN_REPARSE_POINT` create 直接直通，导致带该标志的存在性查询绕过 tombstone。已收窄修复：`PreCreate` 先执行 `QueryPath` 并优先处理 tombstone/passthrough；只有非 tombstone 且非服务端 passthrough 的 reparse-point open 才直通，避免破坏 tombstone 隐藏语义。
+
 <a id="T048"></a>
 
 ## T048 - 更新 reparse 兼容性测试与发布文档

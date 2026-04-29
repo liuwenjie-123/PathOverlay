@@ -1023,9 +1023,6 @@ PathOverlayPreCreate(
     if (PathOverlayIsServiceProcess(requestorProcessId)) {
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
-    if (PathOverlayIsReparsePointOpen(Data)) {
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
-    }
 
     status = PathOverlayGetFileNameInformationWithFallback(Data, &nameInfo);
     if (!NT_SUCCESS(status)) {
@@ -1064,6 +1061,11 @@ PathOverlayPreCreate(
         return FLT_PREOP_COMPLETE;
     }
     if (NT_SUCCESS(status) && serviceResponse.PathState == PathOverlayPathStatePassthrough) {
+        FltReleaseFileNameInformation(nameInfo);
+        ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
+        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    }
+    if (PathOverlayIsReparsePointOpen(Data)) {
         FltReleaseFileNameInformation(nameInfo);
         ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
