@@ -1573,7 +1573,11 @@ PathOverlayPreNetworkQueryOpen(
 
     status = PathOverlayResolveQueryShadowPath(Data, &shadowPath, &tombstone);
     if (tombstone) {
-        Data->IoStatus.Status = STATUS_OBJECT_NAME_NOT_FOUND;
+        if (Data->Iopb->Parameters.NetworkQueryOpen.Irp != NULL) {
+            Data->Iopb->Parameters.NetworkQueryOpen.Irp->IoStatus.Status = STATUS_OBJECT_NAME_NOT_FOUND;
+            Data->Iopb->Parameters.NetworkQueryOpen.Irp->IoStatus.Information = 0;
+        }
+        Data->IoStatus.Status = STATUS_SUCCESS;
         Data->IoStatus.Information = 0;
         FltSetCallbackDataDirty(Data);
         return FLT_PREOP_COMPLETE;
@@ -1588,6 +1592,11 @@ PathOverlayPreNetworkQueryOpen(
             &lengthReturned);
         ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
         if (NT_SUCCESS(status)) {
+            if (Data->Iopb->Parameters.NetworkQueryOpen.Irp != NULL) {
+                Data->Iopb->Parameters.NetworkQueryOpen.Irp->IoStatus.Status = STATUS_SUCCESS;
+                Data->Iopb->Parameters.NetworkQueryOpen.Irp->IoStatus.Information =
+                    lengthReturned != 0 ? lengthReturned : sizeof(FILE_NETWORK_OPEN_INFORMATION);
+            }
             Data->IoStatus.Status = STATUS_SUCCESS;
             Data->IoStatus.Information =
                 lengthReturned != 0 ? lengthReturned : sizeof(FILE_NETWORK_OPEN_INFORMATION);

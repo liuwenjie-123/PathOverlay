@@ -1503,7 +1503,10 @@ DWORD WINAPI DriverMessageThread(LPVOID parameter) {
 
         const HRESULT replyResult = FilterReplyMessage(gDriverPort, &reply.header, sizeof(reply));
         if (FAILED(replyResult)) {
-            WriteLog(L"driver request: FilterReplyMessage failed");
+            std::wstringstream stream;
+            stream << L"driver request: FilterReplyMessage failed hr=0x" << std::hex
+                   << static_cast<unsigned long>(replyResult);
+            WriteLog(stream.str());
         }
     }
 

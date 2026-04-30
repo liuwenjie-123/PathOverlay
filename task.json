@@ -147,6 +147,28 @@
       ],
       "depends_on": [],
       "notes_ref": "docs/task-notes.md#T050"
+    },
+    {
+      "id": "T051",
+      "title": "修复 163737 新日志中的目录 tombstone 可见回归",
+      "status": "done",
+      "description": "分析 PathOverlay-Test-20260429-163737.log 中提交 T049 后目录 tombstone 仍被 Test-Path 看见的问题，修复驱动或服务回复链路。",
+      "deliverables": [
+        "163737 日志根因分析",
+        "目录 tombstone 存在性查询修复",
+        "必要诊断日志增强"
+      ],
+      "test_criteria": [
+        "PathOverlay-Test-20260429-163737.log 的失败原因已定位",
+        "scripts/build.ps1 通过",
+        "scripts/test.ps1 通过",
+        "scripts/package-test-machine.ps1 -Configuration Release 通过",
+        "测试机 E2E 目录 tombstone 用例通过"
+      ],
+      "depends_on": [
+        "T049"
+      ],
+      "notes_ref": "docs/task-notes.md#T051"
     }
   ]
 }

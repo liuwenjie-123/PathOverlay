@@ -49,3 +49,13 @@
 2026-04-29：`task.json` 约 43KB、`docs/task-notes.md` 约 63KB，绝对体量不大，但会让代理在每次查看任务时容易误读全量历史并占用上下文。已将 T001-T044 的任务详情归档到 `docs/task-archive.json`，将 T004-T044 的长 notes 归档到 `docs/task-notes-archive.md`；活跃 `task.json` 仅保留 T045 起的当前/近期任务，并通过 `archive.archived_task_ranges` 指向归档文件。`docs/task-notes.md` 也只保留 T045 起的 notes。`AGENTS.md` 已补充归档入口，后续只有需要历史任务时才读取归档文件。
 
 归档后活跃 `task.json` 约 6KB，活跃 `docs/task-notes.md` 约 6KB。验证通过：`task.json` 和 `docs/task-archive.json` 均可被 JSON 解析；归档文件保留 T001-T044 的任务详情和 T004-T044 的 notes。
+
+<a id="T051"></a>
+
+## T051 - 修复 163737 新日志中的目录 tombstone 可见回归
+
+2026-04-30 复查测试机日志 `PathOverlay-Test-20260429-163737.log`：这是 T049 提交后的新包日志，失败点仍是 T023/T028 目录 tombstone 场景 `tombstoned directory is hidden`。服务日志显示 `record-delete ... delete-dir ok` 后，`QueryPath(delete-dir)` 已返回 `state=tombstone`，说明 metadata 正确；但测试端 `Test-Path` 仍看到目录，并且最后出现 `FilterReplyMessage failed`。初步判断剩余问题在驱动存在性查询完成路径或服务回复竞态，而不是 tombstone 写入失败。
+
+2026-04-30：已修正 `IRP_MJ_NETWORK_QUERY_OPEN` tombstone 完成语义。该路径是 fast I/O；当服务返回 tombstone 时，驱动现在把底层 create IRP 的 `IoStatus.Status` 设为 `STATUS_OBJECT_NAME_NOT_FOUND`，同时让 callback data 以 `STATUS_SUCCESS` 完成，表示 fast I/O 已处理该查询。此前直接把 callback data 设为 not found，可能被 Filter Manager/调用方视为 fast path 失败而继续看到真实目录。服务日志也增强为输出 `FilterReplyMessage failed hr=...`，便于下一轮测试机日志判断回复失败原因。验证通过：`scripts/build.ps1`、`scripts/test.ps1`、`scripts/package-test-machine.ps1 -Configuration Release`；新测试机包已生成到 `test-machine-package`。当前本机 `bcdedit /enum '{current}'` 未显示 `testsigning Yes`，无法加载测试签名驱动跑真实 E2E，T051 暂 blocked，等待测试机复跑 `Run-PathOverlay-Test.cmd`。
+
+2026-04-30 复查测试机日志 `PathOverlay-Test-20260430-104715.log`：T023/T028 目录 tombstone 用例已通过，文件 rename 和目录 rename 场景也继续通过，说明 T051 的 tombstone 存在性查询修复有效。测试继续前进后失败在 T043 兼容性用例 `empty nested directory did not pre-create real source`，这是后续独立问题：创建 `source\empty-root\nested\leaf` 时 shadow 目录已创建且 overlay 可见，但禁用规则后真实 source 下也出现了 `empty-root`。
