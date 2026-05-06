@@ -610,21 +610,45 @@ PathOverlayHasWriteIntent(
     ULONG options = Data->Iopb->Parameters.Create.Options;
     ULONG disposition = (options >> 24) & 0xff;
 
+    if (disposition == FILE_CREATE ||
+        disposition == FILE_OPEN_IF ||
+        disposition == FILE_OVERWRITE ||
+        disposition == FILE_OVERWRITE_IF ||
+        disposition == FILE_SUPERSEDE) {
+        return TRUE;
+    }
+
     if (Data->Iopb->Parameters.Create.SecurityContext == NULL) {
         return FALSE;
     }
 
     desiredAccess = Data->Iopb->Parameters.Create.SecurityContext->DesiredAccess;
-
-    if ((desiredAccess & (FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA)) != 0) {
+    if ((desiredAccess & (FILE_WRITE_DATA |
+                          FILE_APPEND_DATA |
+                          FILE_WRITE_EA |
+                          FILE_WRITE_ATTRIBUTES |
+                          FILE_DELETE_CHILD |
+                          DELETE |
+                          WRITE_DAC |
+                          WRITE_OWNER |
+                          GENERIC_WRITE |
+                          GENERIC_ALL)) != 0) {
         return TRUE;
     }
 
-    return disposition == FILE_CREATE ||
-           disposition == FILE_OPEN_IF ||
-           disposition == FILE_OVERWRITE ||
-           disposition == FILE_OVERWRITE_IF ||
-           disposition == FILE_SUPERSEDE;
+    return FALSE;
+}
+
+static ACCESS_MASK
+PathOverlayGetCreateDesiredAccess(
+    _In_ PFLT_CALLBACK_DATA Data
+    )
+{
+    if (Data->Iopb->Parameters.Create.SecurityContext == NULL) {
+        return 0;
+    }
+
+    return Data->Iopb->Parameters.Create.SecurityContext->DesiredAccess;
 }
 
 static BOOLEAN
@@ -636,11 +660,41 @@ PathOverlayIsDirectoryOpen(
 }
 
 static BOOLEAN
-PathOverlayIsReparsePointOpen(
+PathOverlayHasDirectoryCreateHint(
     _In_ PFLT_CALLBACK_DATA Data
     )
 {
-    return (Data->Iopb->Parameters.Create.Options & FILE_OPEN_REPARSE_POINT) != 0;
+    return (Data->Iopb->Parameters.Create.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+           (Data->Iopb->Parameters.Create.Options & FILE_NON_DIRECTORY_FILE) == 0;
+}
+
+static BOOLEAN
+PathOverlayShouldPassThroughReparsePointOpen(
+    _In_ PFLT_CALLBACK_DATA Data
+    )
+{
+    ULONG options = Data->Iopb->Parameters.Create.Options;
+    ACCESS_MASK desiredAccess;
+    ULONG disposition;
+
+    if ((options & FILE_OPEN_REPARSE_POINT) == 0) {
+        return FALSE;
+    }
+
+    disposition = (options >> 24) & 0xff;
+    if (disposition == FILE_CREATE ||
+        disposition == FILE_OPEN_IF ||
+        disposition == FILE_OVERWRITE ||
+        disposition == FILE_OVERWRITE_IF ||
+        disposition == FILE_SUPERSEDE) {
+        desiredAccess = PathOverlayGetCreateDesiredAccess(Data);
+        if ((desiredAccess & (FILE_WRITE_ATTRIBUTES | GENERIC_WRITE | GENERIC_ALL)) != 0) {
+            return TRUE;
+        }
+        return FALSE;
+    }
+
+    return TRUE;
 }
 
 static BOOLEAN
@@ -650,6 +704,46 @@ PathOverlayIsSameUnicodeStringInsensitive(
     )
 {
     return RtlCompareUnicodeString(Left, Right, TRUE) == 0;
+}
+
+static BOOLEAN
+PathOverlayUnicodeStringContainsInsensitive(
+    _In_opt_ PCUNICODE_STRING Value,
+    _In_z_ PCWSTR Needle
+    )
+{
+    ULONG valueChars;
+    ULONG needleChars = 0;
+    ULONG valueIndex;
+    ULONG needleIndex;
+
+    if (Value == NULL || Value->Buffer == NULL || Needle == NULL) {
+        return FALSE;
+    }
+
+    valueChars = Value->Length / sizeof(WCHAR);
+    while (Needle[needleChars] != UNICODE_NULL) {
+        ++needleChars;
+    }
+    if (needleChars == 0 || valueChars < needleChars) {
+        return FALSE;
+    }
+
+    for (valueIndex = 0; valueIndex <= valueChars - needleChars; ++valueIndex) {
+        BOOLEAN matched = TRUE;
+        for (needleIndex = 0; needleIndex < needleChars; ++needleIndex) {
+            if (RtlUpcaseUnicodeChar(Value->Buffer[valueIndex + needleIndex]) !=
+                RtlUpcaseUnicodeChar(Needle[needleIndex])) {
+                matched = FALSE;
+                break;
+            }
+        }
+        if (matched) {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
 }
 
 static BOOLEAN
@@ -766,6 +860,161 @@ PathOverlaySendServiceRequest(
     }
 
     return (NTSTATUS)response.Status;
+}
+
+static VOID
+PathOverlayCopyUnicodeStringSnippet(
+    _In_opt_ PCUNICODE_STRING Source,
+    _Out_writes_(DestinationChars) PWCHAR Destination,
+    _In_ ULONG DestinationChars
+    )
+{
+    ULONG charsToCopy;
+
+    if (DestinationChars == 0) {
+        return;
+    }
+
+    Destination[0] = UNICODE_NULL;
+    if (Source == NULL || Source->Buffer == NULL) {
+        return;
+    }
+
+    charsToCopy = Source->Length / sizeof(WCHAR);
+    if (charsToCopy >= DestinationChars) {
+        charsToCopy = DestinationChars - 1;
+    }
+    if (charsToCopy > 0) {
+        RtlCopyMemory(Destination, Source->Buffer, charsToCopy * sizeof(WCHAR));
+    }
+    Destination[charsToCopy] = UNICODE_NULL;
+}
+
+static BOOLEAN
+PathOverlayShouldTracePreCreate(
+    _In_opt_ PCUNICODE_STRING Path,
+    _In_opt_ PCFLT_RELATED_OBJECTS FltObjects
+    )
+{
+    if (PathOverlayUnicodeStringContainsInsensitive(Path, L"empty-root")) {
+        return TRUE;
+    }
+    if (PathOverlayUnicodeStringContainsInsensitive(Path, L"junction-out")) {
+        return TRUE;
+    }
+    if (FltObjects != NULL &&
+        FltObjects->FileObject != NULL &&
+        (PathOverlayUnicodeStringContainsInsensitive(&FltObjects->FileObject->FileName, L"empty-root") ||
+         PathOverlayUnicodeStringContainsInsensitive(&FltObjects->FileObject->FileName, L"junction-out"))) {
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+static VOID
+PathOverlaySendTraceRequest(
+    _In_opt_ const WCHAR* RuleId,
+    _In_ PCUNICODE_STRING RealPath,
+    _In_z_ PCWSTR Detail
+    )
+{
+    NTSTATUS status;
+    PATHOVERLAY_SERVICE_REQUEST request;
+    PATHOVERLAY_SERVICE_RESPONSE response = { 0 };
+    ULONG replyLength = sizeof(response);
+    LARGE_INTEGER timeout;
+
+    if (gClientPort == NULL || RealPath == NULL || Detail == NULL) {
+        return;
+    }
+    if (RealPath->Length >= sizeof(request.RealNtPath)) {
+        return;
+    }
+
+    RtlZeroMemory(&request, sizeof(request));
+    request.Version = PATHOVERLAY_PROTOCOL_VERSION;
+    request.Command = PathOverlayServiceCommandTraceCreate;
+    if (RuleId != NULL) {
+        PathOverlayCopyNullTerminated(
+            request.RuleId,
+            PATHOVERLAY_MAX_RULE_ID_CHARS,
+            RuleId,
+            PathOverlayNullTerminatedLength(RuleId, PATHOVERLAY_MAX_RULE_ID_CHARS));
+    }
+    PathOverlayCopyNullTerminated(
+        request.RealNtPath,
+        PATHOVERLAY_MAX_PATH_CHARS,
+        RealPath->Buffer,
+        RealPath->Length / sizeof(WCHAR));
+    PathOverlayCopyNullTerminated(
+        request.TargetNtPath,
+        PATHOVERLAY_MAX_PATH_CHARS,
+        Detail,
+        PathOverlayNullTerminatedLength(Detail, PATHOVERLAY_MAX_PATH_CHARS));
+
+    timeout.QuadPart = -100 * 1000 * 10LL;
+    status = FltSendMessage(
+        gFilterHandle,
+        &gClientPort,
+        &request,
+        sizeof(request),
+        &response,
+        &replyLength,
+        &timeout);
+    UNREFERENCED_PARAMETER(status);
+}
+
+static VOID
+PathOverlayTracePreCreateDecision(
+    _In_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _In_ PCUNICODE_STRING Path,
+    _In_opt_ const WCHAR* RuleId,
+    _In_z_ PCWSTR Action,
+    _In_ NTSTATUS Status,
+    _In_ ULONG WriteIntent,
+    _In_ ULONG RealPathExists,
+    _In_ ULONG ShadowPathExists
+    )
+{
+    NTSTATUS formatStatus;
+    WCHAR detail[PATHOVERLAY_MAX_PATH_CHARS];
+    WCHAR fileObjectName[128];
+    ULONG options = Data->Iopb->Parameters.Create.Options;
+    ULONG disposition = (options >> 24) & 0xff;
+    ACCESS_MASK desiredAccess = PathOverlayGetCreateDesiredAccess(Data);
+
+    if (!PathOverlayShouldTracePreCreate(Path, FltObjects)) {
+        return;
+    }
+
+    PathOverlayCopyUnicodeStringSnippet(
+        FltObjects != NULL && FltObjects->FileObject != NULL ? &FltObjects->FileObject->FileName : NULL,
+        fileObjectName,
+        RTL_NUMBER_OF(fileObjectName));
+
+    formatStatus = RtlStringCchPrintfW(
+        detail,
+        RTL_NUMBER_OF(detail),
+        L"precreate action=%ws status=0x%08X opts=0x%08X disp=%lu attrs=0x%08X access=0x%08X dir=%lu hint=%lu write=%lu real=%lu shadow=%lu fo=%ws",
+        Action,
+        (ULONG)Status,
+        options,
+        disposition,
+        Data->Iopb->Parameters.Create.FileAttributes,
+        desiredAccess,
+        PathOverlayIsDirectoryOpen(Data) ? 1UL : 0UL,
+        PathOverlayHasDirectoryCreateHint(Data) ? 1UL : 0UL,
+        WriteIntent,
+        RealPathExists,
+        ShadowPathExists,
+        fileObjectName);
+    if (!NT_SUCCESS(formatStatus)) {
+        return;
+    }
+
+    PathOverlaySendTraceRequest(RuleId, Path, detail);
 }
 
 static NTSTATUS
@@ -1148,6 +1397,18 @@ PathOverlayUnload(
 }
 
 static FLT_PREOP_CALLBACK_STATUS
+PathOverlayCompleteCreateWithStatus(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ NTSTATUS Status
+    )
+{
+    Data->IoStatus.Status = Status;
+    Data->IoStatus.Information = 0;
+    FltSetCallbackDataDirty(Data);
+    return FLT_PREOP_COMPLETE;
+}
+
+static FLT_PREOP_CALLBACK_STATUS
 PathOverlayPreCreate(
     _Inout_ PFLT_CALLBACK_DATA Data,
     _In_ PCFLT_RELATED_OBJECTS FltObjects,
@@ -1177,6 +1438,16 @@ PathOverlayPreCreate(
     }
 
     if (!PathOverlayFindSourceRuleForPath(&nameInfo->Name, &rule, matchedSourceNtPath)) {
+        PathOverlayTracePreCreateDecision(
+            Data,
+            FltObjects,
+            &nameInfo->Name,
+            NULL,
+            L"no_rule",
+            STATUS_SUCCESS,
+            2,
+            2,
+            2);
         FltReleaseFileNameInformation(nameInfo);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
@@ -1188,6 +1459,16 @@ PathOverlayPreCreate(
 
     status = PathOverlayBuildShadowPath(&store, &source, &nameInfo->Name, &shadowPath);
     if (!NT_SUCCESS(status)) {
+        PathOverlayTracePreCreateDecision(
+            Data,
+            FltObjects,
+            &nameInfo->Name,
+            rule.RuleId,
+            L"build_shadow_failed",
+            status,
+            2,
+            2,
+            2);
         FltReleaseFileNameInformation(nameInfo);
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
@@ -1199,7 +1480,27 @@ PathOverlayPreCreate(
         &nameInfo->Name,
         NULL,
         &serviceResponse);
+    PathOverlayTracePreCreateDecision(
+        Data,
+        FltObjects,
+        &nameInfo->Name,
+        rule.RuleId,
+        L"query",
+        status,
+        2,
+        2,
+        2);
     if (NT_SUCCESS(status) && serviceResponse.PathState == PathOverlayPathStateTombstone) {
+        PathOverlayTracePreCreateDecision(
+            Data,
+            FltObjects,
+            &nameInfo->Name,
+            rule.RuleId,
+            L"tombstone",
+            status,
+            2,
+            2,
+            2);
         FltReleaseFileNameInformation(nameInfo);
         ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
         Data->IoStatus.Status = STATUS_OBJECT_NAME_NOT_FOUND;
@@ -1208,11 +1509,31 @@ PathOverlayPreCreate(
         return FLT_PREOP_COMPLETE;
     }
     if (NT_SUCCESS(status) && serviceResponse.PathState == PathOverlayPathStatePassthrough) {
+        PathOverlayTracePreCreateDecision(
+            Data,
+            FltObjects,
+            &nameInfo->Name,
+            rule.RuleId,
+            L"passthrough_state",
+            status,
+            2,
+            2,
+            2);
         FltReleaseFileNameInformation(nameInfo);
         ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
-    if (PathOverlayIsReparsePointOpen(Data)) {
+    if (PathOverlayShouldPassThroughReparsePointOpen(Data)) {
+        PathOverlayTracePreCreateDecision(
+            Data,
+            FltObjects,
+            &nameInfo->Name,
+            rule.RuleId,
+            L"reparse_point_open_passthrough",
+            status,
+            2,
+            2,
+            2);
         FltReleaseFileNameInformation(nameInfo);
         ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
@@ -1227,6 +1548,16 @@ PathOverlayPreCreate(
         RtlInitUnicodeString(&responseShadowPath, serviceResponse.ShadowNtPath);
         status = PathOverlayAllocateUnicodeStringCopy(&responseShadowPath, &shadowPath, 'OPhP');
         if (!NT_SUCCESS(status)) {
+            PathOverlayTracePreCreateDecision(
+                Data,
+                FltObjects,
+                &nameInfo->Name,
+                rule.RuleId,
+                L"response_shadow_alloc_failed",
+                status,
+                2,
+                2,
+                2);
             FltReleaseFileNameInformation(nameInfo);
             return FLT_PREOP_SUCCESS_NO_CALLBACK;
         }
@@ -1236,20 +1567,34 @@ PathOverlayPreCreate(
     if (writeIntent && PathOverlayIsSameUnicodeStringInsensitive(&source, &nameInfo->Name)) {
         writeIntent = FALSE;
     }
-    if (!writeIntent && PathOverlayIsDirectoryOpen(Data)) {
-        if (!PathOverlayNtPathExists(&nameInfo->Name) && !PathOverlayNtPathExists(&shadowPath)) {
-            FltReleaseFileNameInformation(nameInfo);
-            ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
-            return FLT_PREOP_SUCCESS_NO_CALLBACK;
-        }
+    {
+        BOOLEAN directoryOpen = PathOverlayIsDirectoryOpen(Data);
+        BOOLEAN directoryCreateHint = PathOverlayHasDirectoryCreateHint(Data);
+        BOOLEAN realPathExists = PathOverlayNtPathExists(&nameInfo->Name);
+        BOOLEAN shadowPathExists = PathOverlayNtPathExists(&shadowPath);
 
-        status = PathOverlaySendServiceRequest(
-            PathOverlayServiceCommandPrepareDirectoryView,
-            rule.RuleId,
+        PathOverlayTracePreCreateDecision(
+            Data,
+            FltObjects,
             &nameInfo->Name,
-            NULL,
-            NULL);
-        if (NT_SUCCESS(status)) {
+            rule.RuleId,
+            L"decision",
+            STATUS_SUCCESS,
+            writeIntent ? 1UL : 0UL,
+            realPathExists ? 1UL : 0UL,
+            shadowPathExists ? 1UL : 0UL);
+
+        if ((directoryOpen || directoryCreateHint) && !realPathExists && shadowPathExists) {
+            PathOverlayTracePreCreateDecision(
+                Data,
+                FltObjects,
+                &nameInfo->Name,
+                rule.RuleId,
+                L"direct_shadow_reparse",
+                STATUS_SUCCESS,
+                writeIntent ? 1UL : 0UL,
+                0,
+                1);
             FltReleaseFileNameInformation(nameInfo);
             status = IoReplaceFileObjectName(FltObjects->FileObject, shadowPath.Buffer, shadowPath.Length);
             ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
@@ -1259,7 +1604,81 @@ PathOverlayPreCreate(
                 FltSetCallbackDataDirty(Data);
                 return FLT_PREOP_COMPLETE;
             }
-            return FLT_PREOP_SUCCESS_NO_CALLBACK;
+            return PathOverlayCompleteCreateWithStatus(Data, status);
+        }
+
+        if (!writeIntent && directoryCreateHint && !realPathExists && !shadowPathExists) {
+            writeIntent = TRUE;
+            PathOverlayTracePreCreateDecision(
+                Data,
+                FltObjects,
+                &nameInfo->Name,
+                rule.RuleId,
+                L"force_write_dir_hint",
+                STATUS_SUCCESS,
+                1,
+                0,
+                0);
+        }
+
+        if (!writeIntent && directoryOpen && !realPathExists && !shadowPathExists) {
+            PathOverlayTracePreCreateDecision(
+                Data,
+                FltObjects,
+                &nameInfo->Name,
+                rule.RuleId,
+                L"missing_directory_open_not_found",
+                STATUS_OBJECT_NAME_NOT_FOUND,
+                0,
+                0,
+                0);
+            FltReleaseFileNameInformation(nameInfo);
+            ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
+            Data->IoStatus.Status = STATUS_OBJECT_NAME_NOT_FOUND;
+            Data->IoStatus.Information = 0;
+            FltSetCallbackDataDirty(Data);
+            return FLT_PREOP_COMPLETE;
+        }
+    }
+
+    if (!writeIntent && PathOverlayIsDirectoryOpen(Data)) {
+        status = PathOverlaySendServiceRequest(
+            PathOverlayServiceCommandPrepareDirectoryView,
+            rule.RuleId,
+            &nameInfo->Name,
+            NULL,
+            NULL);
+        PathOverlayTracePreCreateDecision(
+            Data,
+            FltObjects,
+            &nameInfo->Name,
+            rule.RuleId,
+            NT_SUCCESS(status) ? L"directory_view_prepare_ok" : L"directory_view_prepare_failed",
+            status,
+            0,
+            2,
+            2);
+        if (NT_SUCCESS(status)) {
+            PathOverlayTracePreCreateDecision(
+                Data,
+                FltObjects,
+                &nameInfo->Name,
+                rule.RuleId,
+                L"directory_view_reparse",
+                status,
+                0,
+                2,
+                2);
+            FltReleaseFileNameInformation(nameInfo);
+            status = IoReplaceFileObjectName(FltObjects->FileObject, shadowPath.Buffer, shadowPath.Length);
+            ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
+            if (NT_SUCCESS(status)) {
+                Data->IoStatus.Status = STATUS_REPARSE;
+                Data->IoStatus.Information = IO_REPARSE;
+                FltSetCallbackDataDirty(Data);
+                return FLT_PREOP_COMPLETE;
+            }
+            return PathOverlayCompleteCreateWithStatus(Data, status);
         }
     }
 
@@ -1270,6 +1689,16 @@ PathOverlayPreCreate(
             &nameInfo->Name,
             NULL,
             NULL);
+        PathOverlayTracePreCreateDecision(
+            Data,
+            FltObjects,
+            &nameInfo->Name,
+            rule.RuleId,
+            NT_SUCCESS(status) ? L"copy_on_write_ok" : L"copy_on_write_failed",
+            status,
+            1,
+            2,
+            2);
         if (!NT_SUCCESS(status)) {
             FltReleaseFileNameInformation(nameInfo);
             ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
@@ -1280,16 +1709,56 @@ PathOverlayPreCreate(
         }
     }
 
-    FltReleaseFileNameInformation(nameInfo);
     if (!writeIntent && !PathOverlayNtPathExists(&shadowPath)) {
+        if (!PathOverlayNtPathExists(&nameInfo->Name)) {
+            PathOverlayTracePreCreateDecision(
+                Data,
+                FltObjects,
+                &nameInfo->Name,
+                rule.RuleId,
+                L"missing_shadow_and_real_not_found",
+                STATUS_OBJECT_NAME_NOT_FOUND,
+                0,
+                0,
+                0);
+            FltReleaseFileNameInformation(nameInfo);
+            ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
+            Data->IoStatus.Status = STATUS_OBJECT_NAME_NOT_FOUND;
+            Data->IoStatus.Information = 0;
+            FltSetCallbackDataDirty(Data);
+            return FLT_PREOP_COMPLETE;
+        }
+
+        PathOverlayTracePreCreateDecision(
+            Data,
+            FltObjects,
+            &nameInfo->Name,
+            rule.RuleId,
+            L"passthrough_existing_real",
+            STATUS_SUCCESS,
+            0,
+            1,
+            0);
+        FltReleaseFileNameInformation(nameInfo);
         ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
     }
 
+    PathOverlayTracePreCreateDecision(
+        Data,
+        FltObjects,
+        &nameInfo->Name,
+        rule.RuleId,
+        L"final_reparse",
+        STATUS_SUCCESS,
+        writeIntent ? 1UL : 0UL,
+        2,
+        1);
+    FltReleaseFileNameInformation(nameInfo);
     status = IoReplaceFileObjectName(FltObjects->FileObject, shadowPath.Buffer, shadowPath.Length);
     ExFreePoolWithTag(shadowPath.Buffer, 'OPhP');
     if (!NT_SUCCESS(status)) {
-        return FLT_PREOP_SUCCESS_NO_CALLBACK;
+        return PathOverlayCompleteCreateWithStatus(Data, status);
     }
 
     Data->IoStatus.Status = STATUS_REPARSE;

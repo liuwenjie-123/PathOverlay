@@ -169,6 +169,28 @@
         "T049"
       ],
       "notes_ref": "docs/task-notes.md#T051"
+    },
+    {
+      "id": "T052",
+      "title": "修复空嵌套目录创建提前落到真实 source",
+      "status": "done",
+      "description": "分析 PathOverlay-Test-20260430-104715.log 中 T043 empty nested directory 失败，修复目录创建意图识别，避免 overlay 启用时真实 source 被提前创建。",
+      "deliverables": [
+        "104715 日志根因分析",
+        "驱动目录创建意图修复",
+        "测试机包更新"
+      ],
+      "test_criteria": [
+        "PathOverlay-Test-20260430-104715.log 的失败原因已定位",
+        "scripts/build.ps1 通过",
+        "scripts/test.ps1 通过",
+        "scripts/package-test-machine.ps1 -Configuration Release 通过",
+        "测试机 E2E T043 empty nested directory 用例通过"
+      ],
+      "depends_on": [
+        "T051"
+      ],
+      "notes_ref": "docs/task-notes.md#T052"
     }
   ]
 }

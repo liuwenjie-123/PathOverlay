@@ -111,6 +111,20 @@ function ConvertTo-ShortPath([string]$Path) {
     return ($shortPath | Select-Object -Last 1).Trim()
 }
 
+function Write-PathTreeDiagnostic([string]$Label, [string]$Path) {
+    Write-Host "${Label}: $Path"
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-Host "  <missing>"
+        return
+    }
+
+    Get-Item -LiteralPath $Path -Force | Select-Object FullName, Mode, Attributes | Format-List | Out-Host
+    Get-ChildItem -LiteralPath $Path -Force -Recurse |
+        Select-Object FullName, Mode, Attributes |
+        Format-List |
+        Out-Host
+}
+
 function Parse-Rules([string]$RuleShowOutput) {
     $rules = @()
     foreach ($line in ($RuleShowOutput -split "`r?`n")) {
@@ -153,9 +167,10 @@ function Write-ServiceDiagnostics {
 
     $serviceLog = Join-Path $env:ProgramData "PathOverlay\logs\PathOverlaySvc.log"
     if (Test-Path $serviceLog) {
-        Write-Host ""
-        Write-Host "PathOverlaySvc.log tail:"
-        Get-Content -LiteralPath $serviceLog -Tail 160 | Out-Host
+        Write-FocusedServiceLog "PathOverlaySvc.log focused lines" "empty-root|driver trace:|FilterReplyMessage failed|copy-on-write|directory-view" 2000 80
+        Write-Host "PathOverlaySvc.log raw tail:"
+        $recentLog = Get-Content -LiteralPath $serviceLog -Tail 400
+        $recentLog | Select-Object -Last 40 | Out-Host
     } else {
         Write-Host "PathOverlaySvc.log was not found at $serviceLog"
     }
@@ -166,6 +181,37 @@ function Write-ServiceDiagnostics {
         Select-Object TimeCreated, Id, ProviderName, Message |
         Format-List |
         Out-Host
+}
+
+function Write-FocusedServiceLog([string]$Label, [string]$Pattern, [int]$TailLines, [int]$EdgeLines) {
+    $serviceLog = Join-Path $env:ProgramData "PathOverlay\logs\PathOverlaySvc.log"
+    if (-not (Test-Path -LiteralPath $serviceLog)) {
+        Write-Host "PathOverlaySvc.log was not found at $serviceLog"
+        return
+    }
+
+    $recentLog = @(Get-Content -LiteralPath $serviceLog -Tail $TailLines)
+    $focusedLog = @($recentLog | Where-Object { $_ -match $Pattern })
+    Write-Host ""
+    Write-Host "${Label}:"
+    if ($focusedLog.Count -eq 0) {
+        Write-Host "  <no matching lines>"
+        Write-Host ""
+        return
+    }
+
+    if ($focusedLog.Count -le ($EdgeLines * 2)) {
+        $focusedLog | Out-Host
+        Write-Host ""
+        return
+    }
+
+    Write-Host "  <first $EdgeLines of $($focusedLog.Count) matching lines>"
+    $focusedLog | Select-Object -First $EdgeLines | Out-Host
+    Write-Host "  <omitted $($focusedLog.Count - ($EdgeLines * 2)) matching lines>"
+    Write-Host "  <last $EdgeLines of $($focusedLog.Count) matching lines>"
+    $focusedLog | Select-Object -Last $EdgeLines | Out-Host
+    Write-Host ""
 }
 
 function Invoke-DiagnosticsCollect {
@@ -214,6 +260,27 @@ function Reset-PathOverlayData {
     if (Test-Path $programDataPath) {
         Remove-Item -LiteralPath $programDataPath -Recurse -Force -ErrorAction SilentlyContinue
     }
+}
+
+function Remove-StalePathOverlayTempRoots {
+    $prefixes = @(
+        "PathOverlayNoRule-",
+        "PathOverlayMultiRule-",
+        "PathOverlayRename-",
+        "PathOverlayDirRename-",
+        "PathOverlayDirDelete-",
+        "PathOverlayRuleOps-",
+        "PathOverlayCompat-",
+        "PathOverlayOccupied-"
+    )
+    $removed = 0
+    foreach ($prefix in $prefixes) {
+        Get-ChildItem -LiteralPath $env:TEMP -Directory -Filter "$prefix*" -ErrorAction SilentlyContinue | ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            $removed++
+        }
+    }
+    Write-Host "Removed stale PathOverlay temp roots: $removed"
 }
 
 function Unload-PathOverlayDriver {
@@ -456,7 +523,7 @@ function Test-MultiRuleDriverBehavior {
         if (Test-Path $serviceLog) {
             Write-Host ""
             Write-Host "PathOverlaySvc.log tail after multi-rule test:"
-            Get-Content -LiteralPath $serviceLog -Tail 120 | Out-Host
+            Get-Content -LiteralPath $serviceLog -Tail 40 | Out-Host
         }
     } finally {
         try {
@@ -567,7 +634,7 @@ function Test-DirectoryRenameDriverBehavior {
             }
             $serviceLog = Join-Path $env:ProgramData "PathOverlay\logs\PathOverlaySvc.log"
             if (Test-Path -LiteralPath $serviceLog) {
-                Get-Content -LiteralPath $serviceLog -Tail 120 | Out-Host
+                Get-Content -LiteralPath $serviceLog -Tail 60 | Out-Host
             }
         }
         Write-Check "rename target child is materialized in shadow before read" (Test-Path -LiteralPath $targetShadowChild) "shadow=$targetShadowChild"
@@ -853,17 +920,40 @@ function Test-PathAndAttributeCompatibilityDriverBehavior {
 
         $emptyNested = Join-Path $source "empty-root\nested\leaf"
         New-Item -ItemType Directory -Path $emptyNested -Force | Out-Null
+        Write-FocusedServiceLog "PathOverlaySvc.log focused after empty nested create" "empty-root|driver trace:|FilterReplyMessage failed|copy-on-write|directory-view" 1200 120
         $emptyShadow = ConvertTo-ShadowPath $rule.Store (Join-Path $source "empty-root")
         Write-Check "empty nested directory is visible through overlay" (Test-Path -LiteralPath $emptyNested) "path=$emptyNested"
         Write-Check "empty nested directory is created in shadow" (Test-Path -LiteralPath (Join-Path $emptyShadow "nested\leaf")) "shadow=$emptyShadow"
         Invoke-Cli @("rule", "disable", "--rule", $rule.Id) "Failed to disable compatibility rule for real path verification." | Out-Null
-        Write-Check "empty nested directory did not pre-create real source" (-not (Test-Path -LiteralPath (Join-Path $source "empty-root"))) "source=$source"
+        $emptyRealRoot = Join-Path $source "empty-root"
+        $userSeesEmptyRealRoot = Test-Path -LiteralPath $emptyRealRoot
+        $serviceExistsOutput = Invoke-Cli @("debug", "service-exists", $emptyRealRoot) "Failed to query service-side real empty-root state."
+        $serviceSeesEmptyRealRoot = $serviceExistsOutput -match "exists=true"
+        if ($userSeesEmptyRealRoot -or $serviceSeesEmptyRealRoot) {
+            Write-Host "Empty nested directory diagnostics:"
+            Write-Host "  user Test-Path=$userSeesEmptyRealRoot path=$emptyRealRoot"
+            Write-Host "  service-exists=$serviceExistsOutput"
+            Invoke-Cli @("rule", "show") "Failed to show rules for empty nested diagnostics." | Out-Host
+            Invoke-Cli @("driver", "status") "Failed to query driver status for empty nested diagnostics." | Out-Host
+            Invoke-Cli @("changes", "--rule", $rule.Id) "Failed to query changes for empty nested diagnostics." | Out-Host
+            Write-PathTreeDiagnostic "real empty-root tree" $emptyRealRoot
+            Write-PathTreeDiagnostic "shadow empty-root tree" $emptyShadow
+        }
+        Write-Check "empty nested directory did not pre-create real source" (-not $serviceSeesEmptyRealRoot) "source=$source service=$serviceExistsOutput user_test_path=$userSeesEmptyRealRoot"
         Invoke-Cli @("rule", "enable", "--rule", $rule.Id) "Failed to re-enable compatibility rule." | Out-Null
 
         $reparseTarget = Join-Path $testRoot "reparse-target"
         New-Item -ItemType Directory -Path $reparseTarget -Force | Out-Null
         $junction = Join-Path $source "junction-out"
-        $mklinkOutput = cmd.exe /d /c "mklink /J ""$junction"" ""$reparseTarget""" 2>&1
+        # Create the reparse entry outside the active overlay. PreCreate cannot
+        # distinguish junction setup from ordinary directory creation before the
+        # later FSCTL_SET_REPARSE_POINT call.
+        Invoke-Cli @("rule", "disable", "--rule", $rule.Id) "Failed to disable compatibility rule for junction setup." | Out-Null
+        try {
+            $mklinkOutput = cmd.exe /d /c "mklink /J ""$junction"" ""$reparseTarget""" 2>&1
+        } finally {
+            Invoke-Cli @("rule", "enable", "--rule", $rule.Id) "Failed to re-enable compatibility rule after junction setup." | Out-Null
+        }
         Write-Check "source child junction is created" ((Test-Path -LiteralPath $junction) -and ((Get-Item -LiteralPath $junction -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) $mklinkOutput
         $junctionFile = Join-Path $junction "outside.txt"
         Set-Content -LiteralPath $junctionFile -Value "passthrough-write" -Encoding ASCII
@@ -871,7 +961,9 @@ function Test-PathAndAttributeCompatibilityDriverBehavior {
         Write-Check "junction write is passthrough to target" ((Get-Content -LiteralPath (Join-Path $reparseTarget "outside.txt") -Raw) -match "passthrough-write") "target=$reparseTarget"
         Write-Check "junction subtree is not copied to shadow" (-not (Test-Path -LiteralPath $junctionShadow)) "shadow=$junctionShadow"
         $doctorOutput = Invoke-Cli @("doctor") "Failed to run doctor for reparse compatibility."
-        Write-Check "doctor reports reparse passthrough" ($doctorOutput -match "reparse passthrough" -and $doctorOutput -match [regex]::Escape($junction)) $doctorOutput
+        $junctionCanonical = ConvertTo-CanonicalPath $junction
+        $doctorReportsJunction = ($doctorOutput -match [regex]::Escape($junction)) -or ($doctorOutput -match [regex]::Escape($junctionCanonical))
+        Write-Check "doctor reports reparse passthrough" ($doctorOutput -match "reparse passthrough" -and $doctorReportsJunction) "expected=$junctionCanonical`n$doctorOutput"
 
         $changes = Invoke-Cli @("changes", "--rule", $rule.Id) "Failed to query compatibility changes."
         Write-Check "compatibility changes include long unicode path" (Test-ChangesContainsRule $changes $rule.Id $source $rule.Store "modified" $longUnicodeFile) $changes
@@ -958,8 +1050,15 @@ Start-Transcript -Path $transcript | Out-Null
 
 try {
     Write-Step "Checking package files"
+    Remove-StalePathOverlayTempRoots
     foreach ($path in @($driverPath, $servicePath, $cliPath)) {
         Write-Check "required file exists" (Test-Path $path) $path
+    }
+    foreach ($path in @($driverPath, $servicePath, $cliPath, (Join-Path $root "Test-PathOverlay.ps1"))) {
+        if (Test-Path $path) {
+            $hash = Get-FileHash -LiteralPath $path -Algorithm SHA256
+            Write-Host "Package SHA256 $([IO.Path]::GetFileName($path)) $($hash.Hash)"
+        }
     }
 
     Assert-TestSigning

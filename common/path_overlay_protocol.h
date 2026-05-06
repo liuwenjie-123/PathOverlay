@@ -19,7 +19,8 @@ typedef enum PATHOVERLAY_SERVICE_COMMAND {
     PathOverlayServiceCommandPrepareCopyOnWrite = 2,
     PathOverlayServiceCommandRecordDelete = 3,
     PathOverlayServiceCommandPrepareDirectoryView = 4,
-    PathOverlayServiceCommandRecordRename = 5
+    PathOverlayServiceCommandRecordRename = 5,
+    PathOverlayServiceCommandTraceCreate = 6
 } PATHOVERLAY_SERVICE_COMMAND;
 
 typedef enum PATHOVERLAY_PATH_STATE {

@@ -326,7 +326,17 @@ PATHOVERLAY_SERVICE_RESPONSE ProcessDriverRequest(const PATHOVERLAY_SERVICE_REQU
         return response;
     }
 
-    const std::wstring realPath = NtPathToDosPath(request.RealNtPath);
+    std::wstring realPath = NtPathToDosPath(request.RealNtPath);
+    if (request.Command == PathOverlayServiceCommandTraceCreate) {
+        if (realPath.empty()) {
+            realPath = request.RealNtPath;
+        }
+        WriteLog(
+            std::wstring(L"driver trace: ") + request.TargetNtPath +
+            L" rule=" + request.RuleId +
+            L" path=" + realPath);
+        return response;
+    }
     if (realPath.empty()) {
         response.Status = kNtStatusUnsuccessful;
         return response;
@@ -1721,6 +1731,31 @@ std::wstring ProcessRequest(const std::wstring& request) {
         for (const auto& rule : rules) {
             output << L"\n" << rule.id << L" enabled=" << (rule.enabled ? L"true" : L"false")
                    << L" source=" << rule.source << L" store=" << rule.store;
+        }
+        return output.str();
+    }
+
+    if (request.rfind(L"debug service-exists ", 0) == 0) {
+        const std::wstring path = request.substr(21);
+        if (path.empty()) {
+            return L"ERROR debug service-exists requires path";
+        }
+
+        const DWORD attributes = GetFileAttributesW(path.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+            const DWORD lastError = GetLastError();
+            if (lastError == ERROR_FILE_NOT_FOUND || lastError == ERROR_PATH_NOT_FOUND) {
+                return L"OK exists=false error=" + std::to_wstring(lastError);
+            }
+            return L"ERROR GetFileAttributesW failed error=" + std::to_wstring(lastError);
+        }
+
+        std::wstringstream output;
+        output << L"OK exists=true attributes=0x" << std::hex << attributes;
+        if ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            output << L" directory=true";
+        } else {
+            output << L" directory=false";
         }
         return output.str();
     }

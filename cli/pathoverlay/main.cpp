@@ -340,6 +340,7 @@ void PrintUsage() {
         L"  pathoverlay rule delete --rule <id>\n"
         L"  pathoverlay rule del --rule <id>\n"
         L"  pathoverlay rule show\n"
+        L"  pathoverlay debug service-exists <path>\n"
         L"  pathoverlay debug service-write <path> <content>\n"
         L"  pathoverlay debug prepare-cow --rule <id> <path>\n"
         L"  pathoverlay changes [--rule <id>]\n"
@@ -383,6 +384,9 @@ int wmain(int argc, wchar_t* argv[]) {
     }
 
     if (command == L"debug") {
+        if (argc == 4 && std::wstring(argv[2]) == L"service-exists") {
+            return SendRequest(L"debug service-exists " + std::wstring(argv[3]));
+        }
         if (argc >= 5 && std::wstring(argv[2]) == L"service-write") {
             return SendRequest(L"debug service-write " + JoinArgs(3, argc, argv));
         }
