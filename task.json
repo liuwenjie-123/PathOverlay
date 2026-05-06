@@ -236,6 +236,28 @@
         "T053"
       ],
       "notes_ref": "docs/task-notes.md#T054"
+    },
+    {
+      "id": "T055",
+      "title": "增强 FilterReplyMessage failed 服务日志",
+      "status": "done",
+      "description": "增强服务端 FilterReplyMessage 失败日志，输出 command、rule、path、messageId 和 ProcessDriverRequest 处理耗时，便于后续定位驱动等待超时或请求取消。",
+      "deliverables": [
+        "FilterReplyMessage failed 日志字段增强",
+        "日志增强原因与验证记录"
+      ],
+      "test_criteria": [
+        "失败日志包含 command、rule、path、messageId、elapsed_ms",
+        "scripts/build.ps1 通过",
+        "scripts/test.ps1 通过",
+        "scripts/package-test-machine.ps1 -Configuration Release 通过",
+        "task.json 可被 JSON 解析",
+        "git diff --check 通过"
+      ],
+      "depends_on": [
+        "T053"
+      ],
+      "notes_ref": "docs/task-notes.md#T055"
     }
   ]
 }

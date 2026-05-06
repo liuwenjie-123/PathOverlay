@@ -123,3 +123,11 @@
 ## T054 - 整理 T052/T053 后续文档与测试说明
 
 2026-05-06：新建文档整理任务，依赖 T052 和 T053。整理内容包括：空嵌套目录创建应只进入 shadow、不预创建真实 source；source 内已存在 reparse subtree 的 passthrough 边界；active overlay 下创建 junction 的当前限制或支持状态；以及 doctor 诊断和测试日志中临时 trace/focused log 的说明归档。
+
+<a id="T055"></a>
+
+## T055 - 增强 FilterReplyMessage failed 服务日志
+
+2026-05-06：从 `PathOverlay-Test-20260506-105932.log` 中两条 `FilterReplyMessage failed hr=0x801f0020` 新建诊断增强任务。当前测试全部通过，但该 HRESULT 对应 `ERROR_FLT_NO_WAITER_FOR_REPLY`，说明服务回包时驱动端已不再等待。先增强日志字段，输出 command、rule、path、messageId 和 `ProcessDriverRequest` 耗时，再根据后续测试机日志判断是否需要线程池化服务消息处理或调整驱动超时。
+
+2026-05-06：已增强服务端 `DriverMessageThread` 的失败日志。现在 `FilterReplyMessage` 返回失败时会记录 `hr`、`command=name(value)`、`rule`、`path`、`messageId`、`elapsed_ms`，rename 请求额外记录 `target`；`elapsed_ms` 统计的是 `ProcessDriverRequest` 耗时，便于判断是服务处理慢还是请求取消/超时。验证通过：`scripts/build.ps1`、`scripts/test.ps1`、`scripts/package-test-machine.ps1 -Configuration Release`、`task.json` JSON 解析、`git diff --check`。新测试机包已生成到 `test-machine-package`，关键文件 SHA256：`PathOverlayFlt.sys`=`4A7562D60621269273DF0D4F88514123E4BC5166F2CED5277ABE6D87480580A5`，`PathOverlaySvc.exe`=`0691EFB49B04992A014426AA075FD5486319A22619C53B344A238FBE6AC54964`，`pathoverlay.exe`=`3A237C26E75E42BC75AEB3642CEA671B4B4A10A3A926547968B7382C1CB2FE91`，`Test-PathOverlay.ps1`=`A6519641ADE2DAE71DB5914DF5DB11C98148DE30F2FDA80DD3E828C1BEE9C331`。

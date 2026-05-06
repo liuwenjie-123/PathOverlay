@@ -290,6 +290,33 @@ std::wstring NtPathToDosPath(const std::wstring& ntPath) {
     return {};
 }
 
+const wchar_t* ServiceCommandName(unsigned long command) {
+    switch (command) {
+    case PathOverlayServiceCommandQueryPath:
+        return L"query";
+    case PathOverlayServiceCommandPrepareCopyOnWrite:
+        return L"prepare-cow";
+    case PathOverlayServiceCommandRecordDelete:
+        return L"record-delete";
+    case PathOverlayServiceCommandPrepareDirectoryView:
+        return L"directory-view";
+    case PathOverlayServiceCommandRecordRename:
+        return L"record-rename";
+    case PathOverlayServiceCommandTraceCreate:
+        return L"trace-create";
+    default:
+        return L"unknown";
+    }
+}
+
+std::wstring RequestPathForLog(const wchar_t* ntPath) {
+    std::wstring dosPath = NtPathToDosPath(ntPath);
+    if (!dosPath.empty()) {
+        return dosPath;
+    }
+    return ntPath;
+}
+
 bool IsHiddenByRenameSource(const pathoverlay::ChangeRecord& record, const std::wstring& realPath);
 
 bool IsTombstoned(
@@ -1538,16 +1565,29 @@ DWORD WINAPI DriverMessageThread(LPVOID parameter) {
             continue;
         }
 
+        const ULONGLONG requestStartTick = GetTickCount64();
         DriverReply reply = {};
         reply.header.Status = 0;
         reply.header.MessageId = message.header.MessageId;
         reply.response = ProcessDriverRequest(message.request);
+        const ULONGLONG elapsedMs = GetTickCount64() - requestStartTick;
 
         const HRESULT replyResult = FilterReplyMessage(gDriverPort, &reply.header, sizeof(reply));
         if (FAILED(replyResult)) {
+            const std::wstring realPath = RequestPathForLog(message.request.RealNtPath);
             std::wstringstream stream;
             stream << L"driver request: FilterReplyMessage failed hr=0x" << std::hex
-                   << static_cast<unsigned long>(replyResult);
+                   << static_cast<unsigned long>(replyResult) << std::dec
+                   << L" command=" << ServiceCommandName(message.request.Command)
+                   << L"(" << message.request.Command << L")"
+                   << L" rule=" << message.request.RuleId
+                   << L" path=" << realPath
+                   << L" messageId=" << message.header.MessageId
+                   << L" elapsed_ms=" << elapsedMs;
+            if (message.request.Command == PathOverlayServiceCommandRecordRename &&
+                message.request.TargetNtPath[0] != L'\0') {
+                stream << L" target=" << RequestPathForLog(message.request.TargetNtPath);
+            }
             WriteLog(stream.str());
         }
     }
