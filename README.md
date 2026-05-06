@@ -11,7 +11,7 @@ PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driv
 - 写入真实文件前准备 shadow copy，commit 前不直接修改真实文件。
 - 新建文件记录为 created。
 - 删除文件记录 tombstone，commit 前不删除真实文件。
-- 目录 create/delete/rename/move 进入 shadow 和元数据，commit 前不提前修改真实目录。
+- 目录 create/delete/rename/move 进入 shadow 和元数据，commit 前不提前修改真实目录；空嵌套目录也只在 shadow 中创建，不应预创建真实 source 目录。
 - 文件 rename/move 支持同一 rule 内、目标不存在的路径，commit 前只更新 shadow 和元数据。
 - 目录枚举合并 real/shadow，并隐藏 tombstone 和 renamed source。
 - 支持按 rule id 执行 `commit`，写回变更，写回或删除前创建备份。
@@ -25,7 +25,8 @@ PathOverlay 是一个 Windows 文件系统覆盖层原型，用 `minifilter driv
 
 - 多规则 source 不能相同或互相包含，任一 source 和任一 store 不能互相嵌套。
 - 不支持整盘覆盖、盘符根目录、UNC 路径、网络路径和 reparse point 作为 source。
-- source 内部的 symlink、junction、mount point 等 reparse subtree 采用 passthrough 策略：PathOverlay 不跟随、不接管、不递归复制、不纳入 commit/discard；访问这些路径时由 Windows 默认处理，写入 link target 不受覆盖层隔离保护。
+- source 内部已经存在的 symlink、junction、mount point 等 reparse subtree 采用 passthrough 策略：PathOverlay 不跟随、不接管、不递归复制、不纳入 commit/discard；访问这些路径时由 Windows 默认处理，写入 link target 不受覆盖层隔离保护。
+- 在启用的 overlay 内新建 junction/symlink 不是当前支持的虚拟化操作。需要把 reparse subtree 作为真实 source 内容保留时，先禁用对应 rule 或在启用前创建，再重新启用 rule 验证 passthrough。
 - source 和 store 不能互相嵌套。
 - rename/move 只支持同一 rule 内、同一卷内、目标不存在的文件或目录；跨 rule、跨卷、目标已存在、tombstone 后 rename 会保守失败。
 - 不支持 per-rule include/exclude pattern、排除路径和按进程规则。
@@ -280,6 +281,10 @@ Remove-Item C:\Temp\PathOverlaySource\old.txt
 
 同一 rule 内可以 rename/move 文件或目录；源路径会在 overlay 视图中隐藏，目标路径从 shadow 读取。commit 前真实 source 不会被提前移动或删除。跨 rule、跨卷、目标已存在或 tombstone 后的 rename/move 会失败。
 
+目录创建遵循相同隔离语义。比如创建 `source\empty-root\nested\leaf` 时，overlay 视图应能看到该目录树，但禁用 rule 后真实 source 下不应出现 `empty-root`；这些空目录只存在于该 rule 的 shadow store 中，直到 commit。
+
+source 下已经存在的 junction、symlink 或 mount point 目录树是 passthrough 边界。PathOverlay 不会把该 subtree 复制到 shadow，也不会把其中的写入记录为 pending changes；`commit` 和 `discard` 不会处理这些路径。若要在 source 内新增 junction/symlink，请先禁用 rule 或在添加 rule 前创建，再启用 rule。
+
 按 rule id 丢弃该规则的覆盖层变更，不修改真实目录：
 
 ```powershell
@@ -332,7 +337,7 @@ Remove-Item C:\Temp\PathOverlaySource\old.txt
 
 `status` 是轻量只读状态摘要，输出服务连接、驱动连接、规则数量、启用规则数量、pending changes 数量、cleanup 队列计数和最近 operation 摘要。它不扫描完整 shadow 目录树。
 
-`doctor` 是只读一致性检查，报告 failed/recoverable/running operation、failed cleanup、缺失 cleanup 路径、缺失 rule source、非法 store 类型、缺失 shadow 和 source 内 reparse passthrough 路径等问题。第一阶段没有自动 `--fix`，不会修改 metadata、shadow 或真实 source。
+`doctor` 是只读一致性检查，报告 failed/recoverable/running operation、failed cleanup、缺失 cleanup 路径、缺失 rule source、非法 store 类型、缺失 shadow 和 source 内 reparse passthrough 路径等问题。`WARN reparse passthrough` 表示 source 内存在已直通的 reparse subtree；这是当前边界提示，不代表 overlay 数据损坏。`ERROR missing shadow` 表示 metadata 中需要 shadow 的变更找不到对应 shadow 路径，应作为一致性错误调查。第一阶段没有自动 `--fix`，不会修改 metadata、shadow 或真实 source。
 
 `diagnostics collect [--output <目录>]` 会生成诊断目录，包含 `rule-show.txt`、`changes.txt`、`status.txt`、`doctor.txt`、`driver-status.txt`、SCM 状态、manifest 和服务日志副本；服务不可用时也会记录失败输出，便于离线排查。诊断包可能包含本机路径、rule id、store 路径和错误消息，分享前应按需要脱敏。
 

@@ -217,7 +217,7 @@
     {
       "id": "T054",
       "title": "整理 T052/T053 后续文档与测试说明",
-      "status": "pending",
+      "status": "done",
       "description": "整理空嵌套目录创建、source 内 reparse subtree passthrough、active overlay 下 junction 创建边界以及 doctor 诊断行为的文档和测试说明，清理临时诊断说明的归档位置。",
       "deliverables": [
         "README 或 docs/Testing.md 行为说明更新",

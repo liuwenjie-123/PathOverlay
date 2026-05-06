@@ -108,8 +108,12 @@ Confirm the E2E run covers:
   rename/move, commit, discard, backup creation, and cleanup;
 - rule-scoped `changes`, commit/discard dry-run, and occupied-file detection;
 - compatibility paths and attributes listed in `docs/Testing.md`;
-- source-child junction or symlink passthrough does not create changes, shadow
-  content, commit work, or discard work;
+- empty nested directory creation is isolated to shadow and does not pre-create
+  real source directories;
+- source-child junction or symlink passthrough for already-existing reparse
+  subtrees does not create changes, shadow content, commit work, or discard
+  work; active-overlay creation of new junctions/symlinks remains outside the
+  supported virtualization boundary;
 - failure diagnostics path printing when an assertion fails.
 
 ## Cleanup

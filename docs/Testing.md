@@ -29,9 +29,10 @@ copies `sqlite3.dll` beside the test executable when needed, and runs
   failure, backup creation, and metadata retention after failed commit;
 - compatibility cases for long and Unicode paths, case variants, 8.3 short paths
   when available, read-only attributes, last-write timestamps, and empty nested
-  directories;
-- source-child reparse passthrough, where symlink or junction subtrees are not
-  copied into shadow and do not create overlay metadata.
+  directories that must be created only in shadow;
+- source-child reparse passthrough for already-existing symlink or junction
+  subtrees, where the subtree is not copied into shadow and does not create
+  overlay metadata.
 
 The user-mode tests use directories under `%TEMP%\PathOverlayTests` and clean
 that data before and after the run.
@@ -74,6 +75,9 @@ Expected diagnostic behavior:
 - `doctor` reports `no issues` on a clean store, or emits `WARN`/`ERROR` lines
   for recoverable operations, failed cleanup, missing source, invalid store, or
   missing shadow data;
+- `WARN reparse passthrough` is expected when a rule source contains an
+  already-existing junction, symlink, or mount point subtree; `ERROR missing
+  shadow` is not expected for valid pending changes and must be investigated;
 - `diagnostics collect` creates a directory containing command output files,
   SCM status, a manifest, and the service log when present;
 - diagnostic collection must not copy real source file content or shadow file
@@ -147,6 +151,24 @@ port, installs and starts `PathOverlaySvc`, verifies CLI IPC, and exercises:
   8.3 short paths when available, read-only attributes, last-write timestamps,
   empty nested directories, and source-child junction passthrough;
 - occupied-file detection before commit/discard.
+
+Compatibility expectations:
+
+- Empty nested directory creation, such as `source\empty-root\nested\leaf`, must
+  be visible through the overlay and materialized under the rule shadow store,
+  but it must not pre-create `empty-root` or any child directory in the real
+  source before commit.
+- Long Unicode paths must write to shadow and remain valid for `doctor`; a
+  valid pending change for such a path must not produce `ERROR missing shadow`.
+- Source-child reparse passthrough covers reparse subtrees that already exist in
+  the real source while the rule is enabled. The E2E script creates the junction
+  while the rule is disabled, re-enables the rule, writes through the junction,
+  and expects the write to reach the link target without creating shadow content
+  or overlay metadata for the junction subtree.
+- Creating a new junction or symlink inside an active overlay is outside the
+  current supported virtualization boundary. Use a disabled rule or create the
+  reparse point before adding/enabling the rule when that subtree must remain a
+  real-source passthrough boundary.
 
 The run is accepted only when the transcript ends with:
 

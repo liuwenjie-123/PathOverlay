@@ -124,6 +124,8 @@
 
 2026-05-06：新建文档整理任务，依赖 T052 和 T053。整理内容包括：空嵌套目录创建应只进入 shadow、不预创建真实 source；source 内已存在 reparse subtree 的 passthrough 边界；active overlay 下创建 junction 的当前限制或支持状态；以及 doctor 诊断和测试日志中临时 trace/focused log 的说明归档。
 
+2026-05-06：已整理 T052/T053 后续文档。`README.md` 明确目录创建隔离语义：空嵌套目录只应在 shadow 中创建，commit 前不应预创建真实 source；同时明确 source 内已经存在的 junction/symlink/mount point subtree 是 passthrough 边界，不复制到 shadow、不进入 metadata、commit/discard 不处理，active overlay 内新建 junction/symlink 不属于当前支持的虚拟化操作。`docs/Testing.md` 补充 E2E 验收细节：long Unicode path 写入 shadow 且 doctor 不应误报 `ERROR missing shadow`；empty nested directory 必须 overlay 可见、shadow 存在、real source 未预创建；source-child junction 由测试在 rule disabled 时创建，再启用 rule 验证 passthrough。`docs/Release_Checklist.md` 增加对应发布核对项。验证通过：`task.json` JSON 解析、文档脚本名存在性检查、`scripts/test.ps1`、`git diff --check`。
+
 <a id="T055"></a>
 
 ## T055 - 增强 FilterReplyMessage failed 服务日志
