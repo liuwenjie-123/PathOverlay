@@ -309,12 +309,44 @@ const wchar_t* ServiceCommandName(unsigned long command) {
     }
 }
 
+bool IsKnownServiceCommand(unsigned long command) {
+    switch (command) {
+    case PathOverlayServiceCommandQueryPath:
+    case PathOverlayServiceCommandPrepareCopyOnWrite:
+    case PathOverlayServiceCommandRecordDelete:
+    case PathOverlayServiceCommandPrepareDirectoryView:
+    case PathOverlayServiceCommandRecordRename:
+    case PathOverlayServiceCommandTraceCreate:
+        return true;
+    default:
+        return false;
+    }
+}
+
 std::wstring RequestPathForLog(const wchar_t* ntPath) {
+    if (ntPath == nullptr || ntPath[0] == L'\0') {
+        return {};
+    }
     std::wstring dosPath = NtPathToDosPath(ntPath);
     if (!dosPath.empty()) {
         return dosPath;
     }
     return ntPath;
+}
+
+void WriteDriverMessageSummary(
+    std::wstringstream& stream,
+    const DriverMessage& message) {
+    stream << L" command=" << ServiceCommandName(message.request.Command)
+           << L"(" << message.request.Command << L")"
+           << L" version=" << message.request.Version
+           << L" rule=" << message.request.RuleId
+           << L" path=" << RequestPathForLog(message.request.RealNtPath)
+           << L" messageId=" << message.header.MessageId;
+    if (message.request.Command == PathOverlayServiceCommandRecordRename &&
+        message.request.TargetNtPath[0] != L'\0') {
+        stream << L" target=" << RequestPathForLog(message.request.TargetNtPath);
+    }
 }
 
 bool IsHiddenByRenameSource(const pathoverlay::ChangeRecord& record, const std::wstring& realPath);
@@ -1565,6 +1597,22 @@ DWORD WINAPI DriverMessageThread(LPVOID parameter) {
             continue;
         }
 
+        if (message.header.MessageId == 0) {
+            std::wstringstream stream;
+            stream << L"driver request: ignored invalid driver message reason=messageId_zero";
+            WriteDriverMessageSummary(stream, message);
+            WriteLog(stream.str());
+            continue;
+        }
+
+        if (message.request.Version != PATHOVERLAY_PROTOCOL_VERSION ||
+            !IsKnownServiceCommand(message.request.Command)) {
+            std::wstringstream stream;
+            stream << L"driver request: invalid service request";
+            WriteDriverMessageSummary(stream, message);
+            WriteLog(stream.str());
+        }
+
         const ULONGLONG requestStartTick = GetTickCount64();
         DriverReply reply = {};
         reply.header.Status = 0;
@@ -1574,20 +1622,11 @@ DWORD WINAPI DriverMessageThread(LPVOID parameter) {
 
         const HRESULT replyResult = FilterReplyMessage(gDriverPort, &reply.header, sizeof(reply));
         if (FAILED(replyResult)) {
-            const std::wstring realPath = RequestPathForLog(message.request.RealNtPath);
             std::wstringstream stream;
             stream << L"driver request: FilterReplyMessage failed hr=0x" << std::hex
-                   << static_cast<unsigned long>(replyResult) << std::dec
-                   << L" command=" << ServiceCommandName(message.request.Command)
-                   << L"(" << message.request.Command << L")"
-                   << L" rule=" << message.request.RuleId
-                   << L" path=" << realPath
-                   << L" messageId=" << message.header.MessageId
-                   << L" elapsed_ms=" << elapsedMs;
-            if (message.request.Command == PathOverlayServiceCommandRecordRename &&
-                message.request.TargetNtPath[0] != L'\0') {
-                stream << L" target=" << RequestPathForLog(message.request.TargetNtPath);
-            }
+                   << static_cast<unsigned long>(replyResult) << std::dec;
+            WriteDriverMessageSummary(stream, message);
+            stream << L" elapsed_ms=" << elapsedMs;
             WriteLog(stream.str());
         }
     }

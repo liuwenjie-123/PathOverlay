@@ -258,6 +258,28 @@
         "T053"
       ],
       "notes_ref": "docs/task-notes.md#T055"
+    },
+    {
+      "id": "T056",
+      "title": "忽略 messageId 为 0 的无效驱动消息",
+      "status": "done",
+      "description": "根据 PathOverlay-Test-20260506-113131.log 中 command=unknown(0)、messageId=0、elapsed_ms=0 的 FilterReplyMessage failed 日志，修复服务消息线程对空/无效消息仍调用 FilterReplyMessage 的问题。",
+      "deliverables": [
+        "无效空消息检测与 ignored 日志",
+        "不再对 messageId=0 的消息调用 FilterReplyMessage",
+        "测试机包更新"
+      ],
+      "test_criteria": [
+        "messageId=0 的消息只记录 ignored invalid driver message，不调用 FilterReplyMessage",
+        "scripts/build.ps1 通过",
+        "scripts/test.ps1 通过",
+        "scripts/package-test-machine.ps1 -Configuration Release 通过",
+        "测试机 E2E 不再出现 command=unknown(0) 的 FilterReplyMessage failed"
+      ],
+      "depends_on": [
+        "T055"
+      ],
+      "notes_ref": "docs/task-notes.md#T056"
     }
   ]
 }
