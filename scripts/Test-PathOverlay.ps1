@@ -964,6 +964,7 @@ function Test-PathAndAttributeCompatibilityDriverBehavior {
         $junctionCanonical = ConvertTo-CanonicalPath $junction
         $doctorReportsJunction = ($doctorOutput -match [regex]::Escape($junction)) -or ($doctorOutput -match [regex]::Escape($junctionCanonical))
         Write-Check "doctor reports reparse passthrough" ($doctorOutput -match "reparse passthrough" -and $doctorReportsJunction) "expected=$junctionCanonical`n$doctorOutput"
+        Write-Check "doctor does not report missing shadow for compatibility changes" ($doctorOutput -notmatch "ERROR missing shadow") $doctorOutput
 
         $changes = Invoke-Cli @("changes", "--rule", $rule.Id) "Failed to query compatibility changes."
         Write-Check "compatibility changes include long unicode path" (Test-ChangesContainsRule $changes $rule.Id $source $rule.Store "modified" $longUnicodeFile) $changes

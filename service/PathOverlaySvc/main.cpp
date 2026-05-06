@@ -60,6 +60,38 @@ std::wstring MetadataPath() {
     return ProgramDataRoot() + L"\\metadata.db";
 }
 
+bool IsDriveAbsolutePath(const std::wstring& path) {
+    return path.size() >= 3 &&
+           std::iswalpha(path[0]) &&
+           path[1] == L':' &&
+           (path[2] == L'\\' || path[2] == L'/');
+}
+
+std::wstring PathForWin32FileApi(const std::wstring& path) {
+    if (path.rfind(L"\\\\?\\", 0) == 0 || path.rfind(L"\\\\.\\", 0) == 0) {
+        return path;
+    }
+
+    const std::wstring normalized = pathoverlay::NormalizePath(path);
+    if (normalized.rfind(L"\\\\", 0) == 0) {
+        return L"\\\\?\\UNC\\" + normalized.substr(2);
+    }
+    if (IsDriveAbsolutePath(normalized)) {
+        return L"\\\\?\\" + normalized;
+    }
+    return normalized;
+}
+
+DWORD GetFileAttributesLongPath(const std::wstring& path) {
+    const std::wstring apiPath = PathForWin32FileApi(path);
+    return GetFileAttributesW(apiPath.c_str());
+}
+
+bool GetFileAttributesExLongPath(const std::wstring& path, WIN32_FILE_ATTRIBUTE_DATA* data) {
+    const std::wstring apiPath = PathForWin32FileApi(path);
+    return GetFileAttributesExW(apiPath.c_str(), GetFileExInfoStandard, data) != FALSE;
+}
+
 std::string WideToUtf8(const std::wstring& value) {
     if (value.empty()) {
         return {};
@@ -694,7 +726,7 @@ ParsedRuleOperation ParseRuleOperation(const std::wstring& request, const std::w
 }
 
 bool IsExistingRegularFile(const std::wstring& path) {
-    const DWORD attributes = GetFileAttributesW(path.c_str());
+    const DWORD attributes = GetFileAttributesLongPath(path);
     return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
@@ -969,7 +1001,7 @@ bool TryGetFileInfoForDryRun(
     unsigned long long* size,
     std::wstring* lastWriteTime) {
     WIN32_FILE_ATTRIBUTE_DATA data = {};
-    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) {
+    if (!GetFileAttributesExLongPath(path, &data)) {
         const DWORD error = GetLastError();
         if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
             *exists = false;
@@ -1328,7 +1360,7 @@ std::wstring BuildDoctorResponse(pathoverlay::MetadataStore& metadata) {
                    << L" error=" << record.lastError;
         }
         if ((record.status == L"pending" || record.status == L"running") &&
-            GetFileAttributesW(record.path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            GetFileAttributesLongPath(record.path) == INVALID_FILE_ATTRIBUTES) {
             ++warnings;
             output << L"\nWARN orphan cleanup path missing id=" << record.id
                    << L" rule=" << record.ruleId
@@ -1337,13 +1369,13 @@ std::wstring BuildDoctorResponse(pathoverlay::MetadataStore& metadata) {
     }
 
     for (const auto& rule : rules) {
-        const DWORD sourceAttributes = GetFileAttributesW(rule.source.c_str());
+        const DWORD sourceAttributes = GetFileAttributesLongPath(rule.source);
         if (sourceAttributes == INVALID_FILE_ATTRIBUTES) {
             ++warnings;
             output << L"\nWARN rule source missing rule=" << rule.id
                    << L" source=" << rule.source;
         }
-        const DWORD storeAttributes = GetFileAttributesW(rule.store.c_str());
+        const DWORD storeAttributes = GetFileAttributesLongPath(rule.store);
         if (storeAttributes != INVALID_FILE_ATTRIBUTES &&
             (storeAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
             ++errors;
@@ -1371,7 +1403,7 @@ std::wstring BuildDoctorResponse(pathoverlay::MetadataStore& metadata) {
         }
         for (const auto& record : records) {
             if (ShadowRequiredForDiagnostic(record.state) &&
-                GetFileAttributesW(record.shadowPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                GetFileAttributesLongPath(record.shadowPath) == INVALID_FILE_ATTRIBUTES) {
                 ++errors;
                 output << L"\nERROR missing shadow rule=" << rule.id
                        << L" path=" << record.realPath
@@ -1741,7 +1773,7 @@ std::wstring ProcessRequest(const std::wstring& request) {
             return L"ERROR debug service-exists requires path";
         }
 
-        const DWORD attributes = GetFileAttributesW(path.c_str());
+        const DWORD attributes = GetFileAttributesLongPath(path);
         if (attributes == INVALID_FILE_ATTRIBUTES) {
             const DWORD lastError = GetLastError();
             if (lastError == ERROR_FILE_NOT_FOUND || lastError == ERROR_PATH_NOT_FOUND) {

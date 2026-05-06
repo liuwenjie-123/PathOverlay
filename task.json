@@ -191,6 +191,51 @@
         "T051"
       ],
       "notes_ref": "docs/task-notes.md#T052"
+    },
+    {
+      "id": "T053",
+      "title": "修复 doctor long unicode missing shadow 诊断",
+      "status": "done",
+      "description": "分析 PathOverlay-Test-20260506-102827.log 中 doctor 对 long unicode path 输出 ERROR missing shadow 的原因，确认是真实 shadow 缺失还是 Unicode/canonical 路径误报，并修复诊断或写入链路。",
+      "deliverables": [
+        "102827 doctor missing shadow 根因分析",
+        "doctor 或 shadow 一致性修复",
+        "测试覆盖 doctor 不再输出非预期 missing shadow"
+      ],
+      "test_criteria": [
+        "确认 long unicode path 的 shadow 实际状态与 metadata 状态",
+        "scripts/build.ps1 通过",
+        "scripts/test.ps1 通过",
+        "scripts/package-test-machine.ps1 -Configuration Release 通过",
+        "测试机 E2E doctor 不再输出非预期 ERROR missing shadow"
+      ],
+      "depends_on": [
+        "T052"
+      ],
+      "notes_ref": "docs/task-notes.md#T053"
+    },
+    {
+      "id": "T054",
+      "title": "整理 T052/T053 后续文档与测试说明",
+      "status": "pending",
+      "description": "整理空嵌套目录创建、source 内 reparse subtree passthrough、active overlay 下 junction 创建边界以及 doctor 诊断行为的文档和测试说明，清理临时诊断说明的归档位置。",
+      "deliverables": [
+        "README 或 docs/Testing.md 行为说明更新",
+        "reparse passthrough 与 junction 创建边界说明",
+        "doctor 诊断与测试日志说明整理"
+      ],
+      "test_criteria": [
+        "文档明确 empty nested directory 只应落入 shadow",
+        "文档明确 source 内已存在 reparse subtree 的 passthrough 边界",
+        "文档明确 active overlay 下创建 junction 的当前限制或支持状态",
+        "task.json 可被 JSON 解析",
+        "文档中脚本名称与仓库现有脚本一致"
+      ],
+      "depends_on": [
+        "T052",
+        "T053"
+      ],
+      "notes_ref": "docs/task-notes.md#T054"
     }
   ]
 }
